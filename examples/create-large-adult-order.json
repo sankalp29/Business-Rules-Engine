@@ -1,0 +1,34 @@
+{
+  "code": "large-adult-order-without-types",
+  "name": "Approve large adult orders",
+  "description": "Approves an order above 100 for a customer aged 18 or older with the same name",
+  "effectiveFrom": "2026-10-18",
+  "effectiveUntil": "2099-12-31",
+  "when": [
+    {
+      "binding": "$customer",
+      "type": "Customer",
+      "conditions": { "field": "age", "operator": ">=", "value": 18 }
+    },
+    {
+      "binding": "$order",
+      "type": "Order",
+      "conditions": {
+        "operator": "and",
+        "conditions": [
+          { "field": "customerName", "operator": "==", "valueField": "$customer.name" },
+          { "field": "total", "operator": ">", "value": 100 }
+        ]
+      }
+    }
+  ],
+  "then": [
+    {
+      "binding": "$order",
+      "assignments": [
+        { "field": "priority", "value": "HIGH" },
+        { "field": "approved", "value": true }
+      ]
+    }
+  ]
+}

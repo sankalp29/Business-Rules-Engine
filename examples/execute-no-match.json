@@ -1,0 +1,13 @@
+{
+  "facts": [
+    {
+      "type": "Customer",
+      "values": {
+        "name": "Grace Hopper",
+        "age": 30,
+        "discount": 0,
+        "segment": "STANDARD"
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "code": "move-city",
+  "name": "Move customer to Pune",
+  "description": "Sets the nested city on the customer address",
+  "effectiveFrom": "2026-10-18",
+  "effectiveUntil": "2099-12-31",
+  "when": [
+    {
+      "binding": "$customer",
+      "type": "Customer",
+      "conditions": { "field": "address.city", "operator": "==", "value": "London" }
+    }
+  ],
+  "then": [
+    {
+      "binding": "$customer",
+      "assignments": [
+        { "field": "address.city", "value": "Pune" }
+      ]
+    }
+  ]
+}

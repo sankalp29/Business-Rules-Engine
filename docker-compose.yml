@@ -1,0 +1,23 @@
+name: drools-rule-engine
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: rules
+      POSTGRES_USER: rules
+      POSTGRES_PASSWORD: rules
+    # Host port 5433. A local PostgreSQL often already listens on 127.0.0.1:5432,
+    # and that listener wins over Docker's published 5432.
+    ports:
+      - "5433:5432"
+    volumes:
+      - drools-rule-engine-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rules -d rules"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  drools-rule-engine-pg:

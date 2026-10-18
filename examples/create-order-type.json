@@ -1,0 +1,9 @@
+{
+  "name": "Order",
+  "fields": [
+    { "name": "customerName", "type": "String" },
+    { "name": "total", "type": "double" },
+    { "name": "priority", "type": "String" },
+    { "name": "approved", "type": "boolean" }
+  ]
+}

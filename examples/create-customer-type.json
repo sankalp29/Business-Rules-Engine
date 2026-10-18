@@ -1,0 +1,10 @@
+{
+  "name": "Customer",
+  "fields": [
+    { "name": "name", "type": "String" },
+    { "name": "age", "type": "int" },
+    { "name": "discount", "type": "double" },
+    { "name": "segment", "type": "String" },
+    { "name": "address", "type": "Address" }
+  ]
+}

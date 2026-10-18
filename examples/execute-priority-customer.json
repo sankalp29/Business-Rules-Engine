@@ -1,0 +1,17 @@
+{
+  "facts": [
+    {
+      "type": "Customer",
+      "values": {
+        "name": "Ada Lovelace",
+        "age": 70,
+        "discount": 0,
+        "segment": "GOLD",
+        "address": {
+          "city": "London",
+          "zip": "SW1A"
+        }
+      }
+    }
+  ]
+}

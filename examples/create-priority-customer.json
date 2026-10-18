@@ -1,0 +1,34 @@
+{
+  "code": "priority-customer-without-types",
+  "name": "Mark priority customer",
+  "description": "Gold customers aged 65 or older, or any customer with a discount above 0.5, become PRIORITY",
+  "effectiveFrom": "2026-10-18",
+  "effectiveUntil": "2099-12-31",
+  "when": [
+    {
+      "binding": "$customer",
+      "type": "Customer",
+      "conditions": {
+        "operator": "or",
+        "conditions": [
+          {
+            "operator": "and",
+            "conditions": [
+              { "field": "age", "operator": ">=", "value": 65 },
+              { "field": "segment", "operator": "==", "value": "GOLD" }
+            ]
+          },
+          { "field": "discount", "operator": ">", "value": 0.5 }
+        ]
+      }
+    }
+  ],
+  "then": [
+    {
+      "binding": "$customer",
+      "assignments": [
+        { "field": "segment", "value": "PRIORITY" }
+      ]
+    }
+  ]
+}

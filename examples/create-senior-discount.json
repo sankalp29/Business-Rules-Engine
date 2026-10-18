@@ -1,0 +1,23 @@
+{
+  "code": "senior-discount-without-types",
+  "name": "Apply senior discount",
+  "description": "Customers aged 65 or older receive a senior discount",
+  "effectiveFrom": "2026-10-18",
+  "effectiveUntil": "2099-12-31",
+  "when": [
+    {
+      "binding": "$customer",
+      "type": "Customer",
+      "conditions": { "field": "age", "operator": ">=", "value": 65 }
+    }
+  ],
+  "then": [
+    {
+      "binding": "$customer",
+      "assignments": [
+        { "field": "discount", "value": 0.2 },
+        { "field": "segment", "value": "SENIOR" }
+      ]
+    }
+  ]
+}

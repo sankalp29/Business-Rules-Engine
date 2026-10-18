@@ -1,0 +1,17 @@
+{
+  "facts": [
+    {
+      "type": "Customer",
+      "values": {
+        "name": "Ada Lovelace",
+        "age": 40,
+        "discount": 0,
+        "segment": "STANDARD",
+        "address": {
+          "city": "London",
+          "zip": "SW1A"
+        }
+      }
+    }
+  ]
+}

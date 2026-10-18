@@ -1,0 +1,7 @@
+{
+  "name": "Address",
+  "fields": [
+    { "name": "city", "type": "String" },
+    { "name": "zip", "type": "String" }
+  ]
+}

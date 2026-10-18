@@ -1,0 +1,26 @@
+{
+  "facts": [
+    {
+      "type": "Customer",
+      "values": {
+        "name": "Ada",
+        "age": 40,
+        "discount": 0,
+        "segment": "STANDARD",
+        "address": {
+          "city": "London",
+          "zip": "SW1A"
+        }
+      }
+    },
+    {
+      "type": "Order",
+      "values": {
+        "customerName": "Ada",
+        "total": 250,
+        "priority": "NORMAL",
+        "approved": false
+      }
+    }
+  ]
+}
