@@ -1,9 +1,8 @@
-import { createContext, useContext, useEffect, useState, type CSSProperties } from "react"
-import { Link, NavLink, Outlet, useLocation, useMatch, useParams } from "react-router-dom"
+import { createContext, useContext, useEffect, useState } from "react"
+import { Link, Outlet, useMatch, useParams } from "react-router-dom"
 import { ApiError, api } from "../api"
 import { Banner } from "../components/Banner"
 import { PageHead } from "../components/PageHead"
-import { versionColor } from "../calendar"
 import { activeVersionOf, canonicalVersion, findVersion, latestVersion, orderedVersions, ruleKey } from "../format"
 import type { RuleResponse, RuleVersion } from "../model"
 
@@ -24,7 +23,6 @@ export function useLoadedRule(): RuleState {
 export function RuleFrame() {
   const params = useParams()
   const routeKey = params.key ?? ""
-  const location = useLocation()
   const versionMatch = useMatch({ path: "/rules/:key/versions/:version", end: false })
   const requested = versionMatch?.params.version
   const [rule, setRule] = useState<RuleResponse | null>(null)
@@ -73,7 +71,6 @@ export function RuleFrame() {
   const unknownVersion = Boolean(requested) && !requestedVersion
   const focus = requestedVersion ?? activeVersionOf(rule) ?? latestVersion(rule)
   const encoded = encodeURIComponent(ruleKey(rule))
-  const section = location.pathname.endsWith("/dates") ? "dates" : location.pathname.endsWith("/schema") ? "schema" : "logic"
 
   return (
     <RuleContext.Provider value={{ rule, replace: setRule, routeKey }}>
@@ -84,57 +81,13 @@ export function RuleFrame() {
         <PageHead
           eyebrow={rule.code || "Rule"}
           title={rule.name || "Untitled rule"}
-          lede={rule.description || "Schedule, logic, and execution."}
+          lede={rule.description?.trim() || (requested ? "" : "Versions of this rule, and when each one is effective.")}
           action={
             <Link className="ghost link-button" to={newVersionHref(encoded, focus)}>
               New version
             </Link>
           }
         />
-        <nav className="subnav" aria-label="Rule sections">
-          <NavLink to={`/rules/${encoded}`} end>
-            Overview
-          </NavLink>
-          {focus ? (
-            <NavLink to={sectionHref(encoded, focus.version, "logic")} end>
-              Logic
-            </NavLink>
-          ) : null}
-          {focus ? (
-            <NavLink to={sectionHref(encoded, focus.version, "dates")} end>
-              Dates
-            </NavLink>
-          ) : null}
-          {focus ? (
-            <NavLink to={sectionHref(encoded, focus.version, "schema")} end>
-              Schema
-            </NavLink>
-          ) : null}
-          <NavLink to={`/rules/${encoded}/run`} end>
-            Run
-          </NavLink>
-        </nav>
-        {requested ? (
-          <nav className="version-switch" aria-label="Versions">
-            {versions.map((version) => {
-              const color = versionColor(version.versionNumber)
-              const current = version.version === requestedVersion?.version
-              return (
-                <Link
-                  key={version.version}
-                  to={sectionHref(encoded, version.version, section)}
-                  className={current ? "on" : undefined}
-                  aria-current={current ? "page" : undefined}
-                  style={{ "--swatch": color.ink } as CSSProperties}
-                >
-                  <span className="swatch" aria-hidden="true" />
-                  <span className="mono">{version.version}</span>
-                  {version.active ? <span className="pill">Active</span> : null}
-                </Link>
-              )
-            })}
-          </nav>
-        ) : null}
         {unknownVersion ? (
           <Banner
             tone="error"
@@ -143,21 +96,14 @@ export function RuleFrame() {
                 ? `No version ${canonicalVersion(requested)} exists for rule ${rule.code || routeKey}.`
                 : "version must look like v1"
             }
-            details={["Open a version from the calendar."]}
+            details={["Open a version from the list."]}
           />
         ) : (
-          <div key={location.pathname} className="rule-panel">
-            <Outlet />
-          </div>
+          <Outlet />
         )}
       </div>
     </RuleContext.Provider>
   )
-}
-
-function sectionHref(encoded: string, version: string, section: "logic" | "dates" | "schema"): string {
-  const base = `/rules/${encoded}/versions/${encodeURIComponent(version)}`
-  return section === "logic" ? base : `${base}/${section}`
 }
 
 function newVersionHref(encoded: string, focus: RuleVersion | undefined): string {

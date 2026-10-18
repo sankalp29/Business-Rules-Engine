@@ -23,6 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.drools.ruleserver.model.Branch;
+import org.drools.ruleserver.model.BranchArm;
 import org.drools.ruleserver.model.Condition;
 import org.drools.ruleserver.model.FactDeclaration;
 import org.drools.ruleserver.model.FieldAssignment;
@@ -74,11 +76,95 @@ public class DrlGenerator {
             drl.append('\n');
         }
         drl.append("then\n");
-        for (Map.Entry<String, List<FieldAssignment>> entry : group(definition).entrySet()) {
-            appendConsequence(drl, entry.getKey(), schema.get(bindingTypes.get(entry.getKey())), entry.getValue());
+        Map<String, FieldNode> boundNodes = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : bindingTypes.entrySet()) {
+            boundNodes.put(entry.getKey(), schema.get(entry.getValue()));
+        }
+        List<ThenBlock> blocks = definition.then() == null ? List.of() : definition.then();
+        for (int blockIndex = 0; blockIndex < blocks.size(); blockIndex++) {
+            ThenBlock block = blocks.get(blockIndex);
+            if (block == null || block.branches() == null) {
+                continue;
+            }
+            for (int branchIndex = 0; branchIndex < block.branches().size(); branchIndex++) {
+                Branch branch = block.branches().get(branchIndex);
+                if (branch == null || branch.ifArm() == null) {
+                    continue;
+                }
+                appendArmFlag(drl, blockIndex, branchIndex, 0, branch.ifArm(), block.binding(), boundNodes);
+                List<BranchArm> elseIf = branch.elseIf() == null ? List.of() : branch.elseIf();
+                for (int armIndex = 0; armIndex < elseIf.size(); armIndex++) {
+                    BranchArm arm = elseIf.get(armIndex);
+                    if (arm == null) {
+                        continue;
+                    }
+                    appendArmFlag(drl, blockIndex, branchIndex, armIndex + 1, arm, block.binding(), boundNodes);
+                }
+            }
+        }
+        for (Map.Entry<String, List<FieldAssignment>> entry : group(blocks).entrySet()) {
+            appendConsequence(drl, "    ", entry.getKey(), schema.get(bindingTypes.get(entry.getKey())), entry.getValue(), true, "");
+        }
+        for (int blockIndex = 0; blockIndex < blocks.size(); blockIndex++) {
+            ThenBlock block = blocks.get(blockIndex);
+            if (block == null || block.branches() == null) {
+                continue;
+            }
+            FieldNode typeNode = schema.get(bindingTypes.get(block.binding()));
+            for (int branchIndex = 0; branchIndex < block.branches().size(); branchIndex++) {
+                Branch branch = block.branches().get(branchIndex);
+                if (branch == null || branch.ifArm() == null) {
+                    continue;
+                }
+                List<BranchArm> elseIf = branch.elseIf() == null ? List.of() : branch.elseIf();
+                drl.append("    if ( ").append(armFlag(blockIndex, branchIndex, 0)).append(" ) {\n");
+                appendArm(drl, block, typeNode, branch.ifArm(), blockIndex, branchIndex, 0);
+                for (int armIndex = 0; armIndex < elseIf.size(); armIndex++) {
+                    BranchArm arm = elseIf.get(armIndex);
+                    if (arm == null) {
+                        continue;
+                    }
+                    drl.append("    } else if ( ").append(armFlag(blockIndex, branchIndex, armIndex + 1)).append(" ) {\n");
+                    appendArm(drl, block, typeNode, arm, blockIndex, branchIndex, armIndex + 1);
+                }
+                if (branch.otherwise() != null) {
+                    drl.append("    } else {\n");
+                    appendArm(drl, block, typeNode, branch.otherwise(), blockIndex, branchIndex, elseIf.size() + 1);
+                }
+                drl.append("    }\n");
+            }
         }
         drl.append("end\n");
         return drl.toString();
+    }
+
+    private static void appendArmFlag(StringBuilder drl,
+                                      int blockIndex,
+                                      int branchIndex,
+                                      int armIndex,
+                                      BranchArm arm,
+                                      String binding,
+                                      Map<String, FieldNode> boundNodes) {
+        drl.append("    boolean ").append(armFlag(blockIndex, branchIndex, armIndex)).append(" = ")
+                .append(javaCondition(arm.when(), boundNodes, binding, false)).append(";\n");
+    }
+
+    private static void appendArm(StringBuilder drl,
+                                  ThenBlock block,
+                                  FieldNode typeNode,
+                                  BranchArm arm,
+                                  int blockIndex,
+                                  int branchIndex,
+                                  int armIndex) {
+        if (arm.assignments() == null || arm.assignments().isEmpty()) {
+            return;
+        }
+        appendConsequence(drl, "        ", block.binding(), typeNode, arm.assignments(), false,
+                "_t" + blockIndex + "b" + branchIndex + "a" + armIndex);
+    }
+
+    private static String armFlag(int blockIndex, int branchIndex, int armIndex) {
+        return "then" + blockIndex + "b" + branchIndex + "a" + armIndex;
     }
 
     private static String render(Condition condition, FieldNode self, boolean parenthesizeGroup) {
@@ -114,15 +200,149 @@ public class DrlGenerator {
         return condition.getField() + " " + operator.token() + " " + right;
     }
 
-    private static Map<String, List<FieldAssignment>> group(RuleDefinition definition) {
+    private static Map<String, List<FieldAssignment>> group(List<ThenBlock> blocks) {
         Map<String, List<FieldAssignment>> grouped = new LinkedHashMap<>();
-        for (ThenBlock block : definition.then()) {
+        if (blocks == null) {
+            return grouped;
+        }
+        for (ThenBlock block : blocks) {
+            if (block == null || block.assignments() == null) {
+                continue;
+            }
+            if (block.assignments().isEmpty()) {
+                continue;
+            }
             grouped.computeIfAbsent(block.binding(), key -> new ArrayList<>()).addAll(block.assignments());
         }
         return grouped;
     }
 
-    private static void appendConsequence(StringBuilder drl, String binding, FieldNode typeNode, List<FieldAssignment> assignments) {
+    private static String javaCondition(Condition condition,
+                                         Map<String, FieldNode> boundNodes,
+                                         String selfBinding,
+                                         boolean parenthesizeGroup) {
+        ConditionOperator operator = ConditionOperator.fromToken(condition.getOperator());
+        if (operator == null) {
+            throw new IllegalArgumentException("condition operator is not supported");
+        }
+        if (operator.group()) {
+            String joiner = operator == ConditionOperator.AND ? " && " : " || ";
+            List<String> parts = new ArrayList<>();
+            for (Condition child : condition.getConditions()) {
+                parts.add(javaCondition(child, boundNodes, selfBinding, true));
+            }
+            String body = String.join(joiner, parts);
+            return parenthesizeGroup ? "( " + body + " )" : body;
+        }
+        return javaComparison(condition, operator, boundNodes, selfBinding);
+    }
+
+    private static String javaComparison(Condition condition,
+                                         ConditionOperator operator,
+                                         Map<String, FieldNode> boundNodes,
+                                         String selfBinding) {
+        JavaAccess left = access(condition.getField(), boundNodes, selfBinding);
+        JavaAccess rightAccess = null;
+        String right;
+        if (condition.hasValue()) {
+            right = JsonValues.toDrlLiteral(left.kind, condition.valueNode());
+        } else {
+            rightAccess = access(condition.getValueField(), boundNodes, left.binding);
+            right = rightAccess.expr;
+        }
+        boolean leftPrimitive = left.kind.primitive();
+        boolean rightPrimitive = rightAccess == null ? left.kind.primitive() && !isNullLiteral(condition) : rightAccess.kind.primitive();
+        List<String> guards = new ArrayList<>(left.guards);
+        if (rightAccess != null) {
+            guards.addAll(rightAccess.guards);
+        }
+        String comparison;
+        if (operator == ConditionOperator.EQ || operator == ConditionOperator.NE) {
+            if (leftPrimitive && rightPrimitive) {
+                comparison = left.expr + " " + operator.token() + " " + right;
+            } else if (operator == ConditionOperator.EQ) {
+                comparison = "java.util.Objects.equals( " + left.expr + ", " + right + " )";
+            } else {
+                comparison = "!java.util.Objects.equals( " + left.expr + ", " + right + " )";
+            }
+        } else if (operator == ConditionOperator.CONTAINS || operator == ConditionOperator.MATCHES) {
+            guards.add(left.expr + " != null");
+            if (rightAccess != null && !rightAccess.kind.primitive()) {
+                guards.add(right + " != null");
+            }
+            String call = operator == ConditionOperator.CONTAINS ? "contains" : "matches";
+            comparison = left.expr + "." + call + "( " + right + " )";
+        } else {
+            if (!leftPrimitive) {
+                guards.add(left.expr + " != null");
+            }
+            if (rightAccess != null && !rightAccess.kind.primitive()) {
+                guards.add(right + " != null");
+            }
+            comparison = left.expr + " " + operator.token() + " " + right;
+        }
+        if (guards.isEmpty()) {
+            return comparison;
+        }
+        return "( " + String.join(" && ", guards) + " && " + comparison + " )";
+    }
+
+    private static boolean isNullLiteral(Condition condition) {
+        return condition.hasValue() && (condition.valueNode() == null || condition.valueNode().isNull());
+    }
+
+    private static JavaAccess access(String path, Map<String, FieldNode> boundNodes, String selfBinding) {
+        String binding;
+        String relative;
+        FieldNode node;
+        if (ConditionPaths.bound(path)) {
+            binding = ConditionPaths.binding(path);
+            relative = ConditionPaths.field(path);
+            node = boundNodes.get(binding);
+        } else if (selfBinding != null) {
+            binding = selfBinding;
+            relative = path;
+            node = boundNodes.get(selfBinding);
+        } else if (boundNodes.size() == 1) {
+            Map.Entry<String, FieldNode> sole = boundNodes.entrySet().iterator().next();
+            binding = sole.getKey();
+            relative = path;
+            node = sole.getValue();
+        } else {
+            throw new IllegalArgumentException("condition field " + path + " does not name a fact");
+        }
+        if (node == null) {
+            throw new IllegalArgumentException("condition field " + path + " is not a bound fact");
+        }
+        List<String> guards = new ArrayList<>();
+        String current = binding;
+        for (String part : relative.split("\\.", -1)) {
+            FieldNode child = node.children() == null ? null : node.children().get(part);
+            if (child == null) {
+                throw new IllegalArgumentException("condition field " + path + " is not a field");
+            }
+            current = current + "." + getter(part) + "()";
+            if (child.nested()) {
+                guards.add(current + " != null");
+            }
+            node = child;
+        }
+        if (node.scalar() == null) {
+            throw new IllegalArgumentException("condition field " + path + " is not a scalar field");
+        }
+        return new JavaAccess(binding, current, guards, node.scalar());
+    }
+
+    private record JavaAccess(String binding, String expr, List<String> guards, FieldKind kind) {
+    }
+
+    private static void appendConsequence(StringBuilder drl,
+                                          String indent,
+                                          String binding,
+                                          FieldNode typeNode,
+                                          List<FieldAssignment> assignments,
+                                          boolean modify,
+                                          String scope) {
         List<FieldAssignment> scalars = new ArrayList<>();
         Map<String, List<FieldAssignment>> nested = new LinkedHashMap<>();
         for (FieldAssignment assignment : assignments) {
@@ -142,20 +362,27 @@ public class DrlGenerator {
         String prefix = binding.startsWith("$") ? binding.substring(1) : binding;
         for (Map.Entry<String, List<FieldAssignment>> entry : nested.entrySet()) {
             FieldNode child = typeNode.children().get(entry.getKey());
-            String variable = prefix + "_" + entry.getKey();
-            drl.append("    ").append(child.declaredType()).append(' ').append(variable).append(" = ")
+            String variable = prefix + "_" + entry.getKey() + (modify ? "" : scope);
+            drl.append(indent).append(child.declaredType()).append(' ').append(variable).append(" = ")
                     .append(binding).append('.').append(getter(entry.getKey())).append("();\n");
-            drl.append("    if ( ").append(variable).append(" == null ) { ")
+            drl.append(indent).append("if ( ").append(variable).append(" == null ) { ")
                     .append(variable).append(" = new ").append(child.declaredType()).append("(); }\n");
-            writeNested(drl, variable, child, entry.getValue(), entry.getKey() + ".");
+            writeNested(drl, indent, variable, child, entry.getValue(), entry.getKey() + ".");
             setters.add(setter(entry.getKey()) + "( " + variable + " )");
         }
-        drl.append("    modify( ").append(binding).append(" ) { ");
-        drl.append(String.join(", ", setters));
-        drl.append(" };\n");
+        if (modify) {
+            drl.append(indent).append("modify( ").append(binding).append(" ) { ");
+            drl.append(String.join(", ", setters));
+            drl.append(" };\n");
+            return;
+        }
+        for (String setterCall : setters) {
+            drl.append(indent).append(binding).append('.').append(setterCall).append(";\n");
+        }
     }
 
     private static void writeNested(StringBuilder drl,
+                                    String indent,
                                     String variable,
                                     FieldNode node,
                                     List<FieldAssignment> assignments,
@@ -166,7 +393,7 @@ public class DrlGenerator {
             int dot = rest.indexOf('.');
             if (dot < 0) {
                 FieldKind kind = node.children().get(rest).scalar();
-                drl.append("    ").append(variable).append('.').append(setter(rest))
+                drl.append(indent).append(variable).append('.').append(setter(rest))
                         .append("( ").append(literal(kind, assignment)).append(" );\n");
             } else {
                 deeper.computeIfAbsent(rest.substring(0, dot), key -> new ArrayList<>()).add(assignment);
@@ -175,12 +402,12 @@ public class DrlGenerator {
         for (Map.Entry<String, List<FieldAssignment>> entry : deeper.entrySet()) {
             FieldNode child = node.children().get(entry.getKey());
             String childVariable = variable + "_" + entry.getKey();
-            drl.append("    ").append(child.declaredType()).append(' ').append(childVariable).append(" = ")
+            drl.append(indent).append(child.declaredType()).append(' ').append(childVariable).append(" = ")
                     .append(variable).append('.').append(getter(entry.getKey())).append("();\n");
-            drl.append("    if ( ").append(childVariable).append(" == null ) { ")
+            drl.append(indent).append("if ( ").append(childVariable).append(" == null ) { ")
                     .append(childVariable).append(" = new ").append(child.declaredType()).append("(); ")
                     .append(variable).append('.').append(setter(entry.getKey())).append("( ").append(childVariable).append(" ); }\n");
-            writeNested(drl, childVariable, child, entry.getValue(), prefix + entry.getKey() + ".");
+            writeNested(drl, indent, childVariable, child, entry.getValue(), prefix + entry.getKey() + ".");
         }
     }
 

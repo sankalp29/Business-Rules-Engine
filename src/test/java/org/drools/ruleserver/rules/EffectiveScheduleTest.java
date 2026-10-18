@@ -114,13 +114,26 @@ class EffectiveScheduleTest {
     }
 
     @Test
-    void aPartialOverlapIsNotSplitAndAPastSegmentCannotBeCut() {
+    void aPartialOverlapShortensOrShiftsTheCoveredVersion() {
         EffectiveSchedule festival = propose(null, SEPTEMBER, "2026-10-01", "2026-10-10").schedule();
         EffectiveSchedule tail = propose(null, SEPTEMBER, "2026-10-08", "2026-10-12").schedule();
         EffectiveSchedule.Carve partial = EffectiveSchedule.carve(festival, tail, SEPTEMBER);
 
         assertThat(partial.error()).isNull();
-        assertThat(partial.schedule().overlaps(tail)).isTrue();
+        assertThat(partial.schedule().overlaps(tail)).isFalse();
+        assertThat(partial.schedule().contains(day(2026, 10, 7))).isTrue();
+        assertThat(partial.schedule().contains(day(2026, 10, 8))).isFalse();
+        assertThat(partial.schedule().segments()).hasSize(1);
+        assertThat(partial.schedule().segments().get(0).until()).isEqualTo(day(2026, 10, 7).plusSeconds(23 * 3600L + 59 * 60L));
+
+        EffectiveSchedule later = propose(null, SEPTEMBER, "2026-10-08", "2026-10-12").schedule();
+        EffectiveSchedule head = propose(null, SEPTEMBER, "2026-10-01", "2026-10-09").schedule();
+        EffectiveSchedule.Carve shifted = EffectiveSchedule.carve(later, head, SEPTEMBER);
+        assertThat(shifted.error()).isNull();
+        assertThat(shifted.schedule().overlaps(head)).isFalse();
+        assertThat(shifted.schedule().contains(day(2026, 10, 9))).isFalse();
+        assertThat(shifted.schedule().contains(day(2026, 10, 10))).isTrue();
+        assertThat(shifted.schedule().segments().get(0).from()).isEqualTo(day(2026, 10, 10));
 
         EffectiveSchedule started = propose(null, SEPTEMBER, "2026-10-01", "2026-10-10").schedule();
         EffectiveSchedule tomorrow = propose(null, day(2026, 10, 5), "2026-10-06", "2026-10-06").schedule();
@@ -133,6 +146,35 @@ class EffectiveScheduleTest {
         EffectiveSchedule inside = propose(null, SEPTEMBER, "2026-10-02", "2026-10-02").schedule();
         EffectiveSchedule.Carve tooLate = EffectiveSchedule.carve(finished, inside, day(2026, 10, 5));
         assertThat(tooLate.error()).isEqualTo("a segment that is already before the current time cannot change");
+    }
+
+    @Test
+    void coveringEveryMinuteOfAVersionLeavesItWithNoDates() {
+        EffectiveSchedule host = propose(null, SEPTEMBER, "2026-11-01", "2026-11-10").schedule();
+        EffectiveSchedule cover = propose(null, SEPTEMBER, "2026-10-15", "2026-11-20").schedule();
+
+        EffectiveSchedule.Carve carved = EffectiveSchedule.carve(host, cover, SEPTEMBER);
+
+        assertThat(carved.schedule()).isNull();
+        assertThat(carved.error()).isEqualTo("it would have no effective dates left");
+    }
+
+    @Test
+    void aOneMinuteRemainderStaysWithTheCoveredVersion() {
+        Instant from = day(2026, 11, 1);
+        Instant until = from.plus(2, java.time.temporal.ChronoUnit.MINUTES);
+        EffectiveSchedule host = new EffectiveSchedule(List.of(new EffectiveWindow(from, until)));
+        EffectiveSchedule hole = new EffectiveSchedule(List.of(new EffectiveWindow(from.plus(1, java.time.temporal.ChronoUnit.MINUTES),
+                from.plus(1, java.time.temporal.ChronoUnit.MINUTES))));
+
+        EffectiveSchedule.Carve carved = EffectiveSchedule.carve(host, hole, SEPTEMBER);
+
+        assertThat(carved.error()).isNull();
+        assertThat(carved.schedule().overlaps(hole)).isFalse();
+        assertThat(carved.schedule().segments()).hasSize(2);
+        assertThat(carved.schedule().contains(from)).isTrue();
+        assertThat(carved.schedule().contains(until)).isTrue();
+        assertThat(carved.schedule().contains(from.plus(1, java.time.temporal.ChronoUnit.MINUTES))).isFalse();
     }
 
     @Test

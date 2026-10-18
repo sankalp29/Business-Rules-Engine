@@ -21,6 +21,7 @@ package org.drools.ruleserver.api;
 import java.net.URI;
 import java.util.List;
 
+import org.drools.ruleserver.model.DecisionRequest;
 import org.drools.ruleserver.model.EffectiveDates;
 import org.drools.ruleserver.model.ExecuteRequest;
 import org.drools.ruleserver.model.ExecutionResponse;
@@ -77,11 +78,25 @@ public class RuleController {
         return authoringService.getVersion(key, version);
     }
 
+    @PutMapping(path = "/{key}/versions/{version}", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public RuleVersionResponse updateVersion(@PathVariable String key,
+                                             @PathVariable String version,
+                                             @RequestBody RuleSubmission submission) {
+        return authoringService.updateVersion(key, version, submission);
+    }
+
     @PutMapping(path = "/{key}/versions/{version}/dates", consumes = MediaType.APPLICATION_JSON_VALUE)
     public RuleVersionResponse changeDates(@PathVariable String key,
                                            @PathVariable String version,
                                            @RequestBody EffectiveDates dates) {
         return authoringService.changeDates(key, version, dates);
+    }
+
+    @PostMapping(path = "/{key}/versions/{version}/decision", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public RuleVersionResponse decide(@PathVariable String key,
+                                      @PathVariable String version,
+                                      @RequestBody DecisionRequest request) {
+        return authoringService.decide(key, version, request);
     }
 
     @PostMapping(path = "/{key}/versions", consumes = MediaType.APPLICATION_JSON_VALUE)

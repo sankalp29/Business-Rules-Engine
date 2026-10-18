@@ -46,11 +46,13 @@ export function TypesPage() {
             />
           </label>
           {shown.length === 0 ? <p className="note">No type matches that search.</p> : null}
-          <div className="type-grid">
+          <div className="catalog">
             {shown.map((type) => (
-              <Link key={type.name} className="sheet type-card" to={`/types/${encodeURIComponent(type.name)}`}>
-                <h2>{type.name}</h2>
-                {type.description ? <p>{type.description}</p> : null}
+              <Link key={type.name} className="catalog-row" to={`/types/${encodeURIComponent(type.name)}`}>
+                <div className="catalog-copy">
+                  <h2>{type.name}</h2>
+                  {type.description ? <p className="catalog-blurb">{type.description}</p> : null}
+                </div>
               </Link>
             ))}
           </div>

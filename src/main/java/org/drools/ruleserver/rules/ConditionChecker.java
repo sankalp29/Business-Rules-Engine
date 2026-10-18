@@ -43,7 +43,24 @@ final class ConditionChecker {
         if (condition == null) {
             return;
         }
-        walk(path, condition, self, boundNodes, 1, new Budget(path, errors), errors);
+        walk(path, condition, self, boundNodes, 1, new Budget(path, errors), false, errors);
+    }
+
+    /**
+     * A branch condition may name {@code $binding.field}, or a local field of the then block's fact.
+     * A missing parent object makes the comparison false during execution.
+     */
+    static void checkBranch(String path,
+                            Condition condition,
+                            FieldNode self,
+                            Map<String, FieldNode> boundNodes,
+                            List<String> errors) {
+        if (condition == null) {
+            errors.add(path + " is required");
+            return;
+        }
+        Map<String, FieldNode> bound = boundNodes == null ? Map.of() : boundNodes;
+        walk(path, condition, self, bound, 1, new Budget(path, errors), true, errors);
     }
 
     private static void walk(String path,
@@ -52,6 +69,7 @@ final class ConditionChecker {
                              Map<String, FieldNode> boundNodes,
                              int depth,
                              Budget budget,
+                             boolean branch,
                              List<String> errors) {
         if (budget.stopped) {
             return;
@@ -78,10 +96,10 @@ final class ConditionChecker {
             return;
         }
         if (operator.group()) {
-            checkGroup(path, condition, operator, self, boundNodes, depth, budget, errors);
+            checkGroup(path, condition, operator, self, boundNodes, depth, budget, branch, errors);
             return;
         }
-        checkComparison(path, condition, operator, self, boundNodes, budget, errors);
+        checkComparison(path, condition, operator, self, boundNodes, budget, branch, errors);
     }
 
     private static void checkGroup(String path,
@@ -91,6 +109,7 @@ final class ConditionChecker {
                                    Map<String, FieldNode> boundNodes,
                                    int depth,
                                    Budget budget,
+                                   boolean branch,
                                    List<String> errors) {
         if (condition.getField() != null || condition.hasValue() || condition.getValueField() != null) {
             errors.add(path + " cannot include field, value, or valueField when operator is " + operator.token());
@@ -104,7 +123,7 @@ final class ConditionChecker {
             if (budget.stopped) {
                 return;
             }
-            walk(path + ".conditions[" + i + "]", children.get(i), self, boundNodes, depth + 1, budget, errors);
+            walk(path + ".conditions[" + i + "]", children.get(i), self, boundNodes, depth + 1, budget, branch, errors);
         }
     }
 
@@ -114,6 +133,7 @@ final class ConditionChecker {
                                         FieldNode self,
                                         Map<String, FieldNode> boundNodes,
                                         Budget budget,
+                                        boolean branch,
                                         List<String> errors) {
         if (!budget.take()) {
             return;
@@ -123,17 +143,15 @@ final class ConditionChecker {
         }
         String field = condition.getField();
         FieldKind kind = null;
+        FieldNode valueSelf = self;
         if (field == null) {
             errors.add(path + ".field is required");
-        } else if (!ConditionPaths.local(field)) {
-            errors.add(path + ".field must be a field path such as age or address.city");
-        } else if (self != null) {
-            Resolved resolved = resolve(self, field, field);
-            if (resolved.error != null) {
-                errors.add(path + ".field " + resolved.error);
-            } else {
-                kind = resolved.node.scalar();
-                if (!operator.allows(kind)) {
+        } else {
+            ResolvedField resolvedField = resolveField(path, field, branch, self, boundNodes, errors);
+            if (resolvedField != null) {
+                kind = resolvedField.kind;
+                valueSelf = resolvedField.owner;
+                if (kind != null && !operator.allows(kind)) {
                     errors.add(path + ".operator " + operator.token() + " is not allowed for " + kind.drlName()
                             + "; use one of: " + ConditionOperator.allowedFor(kind));
                 }
@@ -146,7 +164,7 @@ final class ConditionChecker {
             return;
         }
         if (hasField) {
-            checkValueField(path, condition.getValueField(), kind, self, boundNodes, errors);
+            checkValueField(path, condition.getValueField(), kind, valueSelf, boundNodes, errors);
             return;
         }
         if (kind != null) {
@@ -224,6 +242,53 @@ final class ConditionChecker {
         }
     }
 
+    private static ResolvedField resolveField(String path,
+                                              String field,
+                                              boolean branch,
+                                              FieldNode self,
+                                              Map<String, FieldNode> boundNodes,
+                                              List<String> errors) {
+        if (ConditionPaths.bound(field)) {
+            if (!branch) {
+                errors.add(path + ".field must be a field path such as age or address.city");
+                return null;
+            }
+            String binding = ConditionPaths.binding(field);
+            FieldNode root = boundNodes.get(binding);
+            if (root == null) {
+                errors.add(path + ".field " + binding + " is not a bound fact");
+                return null;
+            }
+            return resolveLeaf(path, root, ConditionPaths.field(field), field, errors);
+        }
+        if (!ConditionPaths.local(field)) {
+            errors.add(path + ".field must be a field path such as age or address.city");
+            return null;
+        }
+        if (branch && self == null) {
+            String example = boundNodes.isEmpty() ? "$customer.age" : boundNodes.keySet().iterator().next() + "." + field;
+            errors.add(path + ".field must name the fact, for example " + example);
+            return null;
+        }
+        if (self == null) {
+            return null;
+        }
+        return resolveLeaf(path, self, field, field, errors);
+    }
+
+    private static ResolvedField resolveLeaf(String path,
+                                             FieldNode root,
+                                             String relative,
+                                             String label,
+                                             List<String> errors) {
+        Resolved resolved = resolve(root, relative, label);
+        if (resolved.error != null) {
+            errors.add(path + ".field " + resolved.error);
+            return null;
+        }
+        return new ResolvedField(root, resolved.node.scalar());
+    }
+
     private static Resolved resolve(FieldNode root, String path, String label) {
         FieldNode current = root;
         String[] parts = path.split("\\.", -1);
@@ -242,6 +307,9 @@ final class ConditionChecker {
             return Resolved.error(label + " is an object; compare one of its fields");
         }
         return Resolved.found(current);
+    }
+
+    private record ResolvedField(FieldNode owner, FieldKind kind) {
     }
 
     private record Resolved(FieldNode node, String error) {

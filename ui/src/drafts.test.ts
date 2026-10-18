@@ -1,18 +1,25 @@
 import { describe, expect, it } from "vitest"
 import {
+  buildLogic,
   buildRule,
+  changeFactType,
   dateLocks,
   draftFromFields,
   draftFromVersion,
   editEffectiveDates,
   editEffectiveSegments,
+  overlappingWindows,
   emptyComparison,
   emptyRule,
   executePayload,
+  factLabels,
   fieldToJson,
   incompleteNumbers,
   oneDayPeriod,
   parseNumber,
+  addBranch,
+  chainLeaves,
+  removeBranch,
   sanitizeNumber,
   shiftYears,
   suggestNextWindow,
@@ -35,6 +42,25 @@ const customerLeaves: Leaf[] = [
   { path: "approved", type: "boolean" },
   { path: "nickname", type: "String" },
 ]
+
+const orderLeaves: Leaf[] = [
+  { path: "total", type: "double" },
+  { path: "priority", type: "String" },
+]
+
+function versionWith(definition: RuleVersion["definition"]): RuleVersion {
+  return {
+    id: 3,
+    versionNumber: 1,
+    version: "v1",
+    description: "Tiered",
+    effectiveFrom: "2090-01-01T00:00:00+05:30",
+    effectiveUntil: "2091-01-01T00:00:00+05:30",
+    active: false,
+    definition,
+    drl: null,
+  }
+}
 
 function comparison(patch: Partial<ComparisonDraft>): ComparisonDraft {
   return {
@@ -66,6 +92,50 @@ function assignment(patch: Partial<AssignmentDraft>): AssignmentDraft {
 
 function when(root: ComparisonDraft | WhenDraft["root"] = comparison({})): WhenDraft {
   return { id: "w", binding: "$customer", bindingTouched: true, type: "Customer", root }
+}
+
+function segmentChain() {
+  return {
+    id: "tier",
+    ifArm: {
+      id: "senior",
+      when: comparison({ field: "age", operator: ">=", valueText: "65" }),
+      assignments: [assignment({ id: "senior", field: "segment", valueText: "SENIOR" })],
+    },
+    elseIf: [
+      {
+        id: "adult",
+        when: comparison({ id: "adult", field: "age", operator: ">=", valueText: "40" }),
+        assignments: [assignment({ id: "adult", field: "segment", valueText: "ADULT" })],
+      },
+    ],
+    otherwise: {
+      id: "young",
+      assignments: [assignment({ id: "young", field: "segment", valueText: "YOUNG" })],
+    },
+  }
+}
+
+function discountChain() {
+  return {
+    id: "price",
+    ifArm: {
+      id: "gold",
+      when: comparison({ id: "gold", field: "segment", operator: "==", valueText: "GOLD" }),
+      assignments: [assignment({ id: "gold", field: "discount", valueText: "0.2" })],
+    },
+    elseIf: [
+      {
+        id: "silver",
+        when: comparison({ id: "silver", field: "segment", operator: "==", valueText: "SILVER" }),
+        assignments: [assignment({ id: "silver", field: "discount", valueText: "0.1" })],
+      },
+    ],
+    otherwise: {
+      id: "standard",
+      assignments: [assignment({ id: "standard", field: "discount", valueText: "0.05" })],
+    },
+  }
 }
 
 function rule(patch: Partial<RuleDraft> = {}): RuleDraft {
@@ -155,6 +225,26 @@ describe("typed values", () => {
     const values = draftFromFields([{ name: "age", type: "int" }])
     values.age = { kind: "number", text: "-", integer: true }
     expect(incompleteNumbers(values, "Customer")).toEqual(["Customer.age needs a whole number."])
+  })
+})
+
+describe("logic edits", () => {
+  it("builds a body for a draft whose dates are already in the past", () => {
+    const built = buildLogic(
+      rule({ effectiveFrom: "2020-01-01T00:00", effectiveUntil: "2020-06-01T00:00", salience: "4" }),
+      [customerLeaves],
+    )
+    expect(built.errors).toEqual([])
+    expect(built.body).toMatchObject({
+      code: "senior-discount",
+      name: "Apply senior discount",
+      description: "Customers aged 65 or older receive a senior discount",
+      salience: 4,
+    })
+    expect(built.body).not.toHaveProperty("effectiveFrom")
+    expect(built.body).not.toHaveProperty("effectiveUntil")
+    expect(built.body).not.toHaveProperty("segments")
+    expect(built.body).not.toHaveProperty("branches")
   })
 })
 
@@ -388,6 +478,214 @@ describe("rule construction", () => {
     ])
   })
 
+  it("stores two if else-if else chains on the then block and keeps when as the gate", () => {
+    const started = addBranch(rule(), "t")
+    expect(started.thens[0]?.branches).toHaveLength(1)
+    expect(started.whens[0]?.root).toMatchObject({ field: "age", operator: ">=" })
+    const open = buildRule(started, [customerLeaves])
+    expect(open.body).toBeNull()
+    expect(open.errors.some((error) => error.startsWith("Then block 1, branch 1, if"))).toBe(true)
+
+    const removed = removeBranch(started, "t", started.thens[0]?.branches?.[0]?.id ?? "")
+    expect(removed.thens[0]?.branches).toEqual([])
+    expect(buildRule(removed, [customerLeaves]).body).toEqual(buildRule(rule(), [customerLeaves]).body)
+
+    const tiered = rule({
+      whens: [when(comparison({ field: "age", operator: ">", valueText: "18" }))],
+      thens: [
+        {
+          id: "t",
+          binding: "$customer",
+          assignments: [assignment({ id: "base", field: "name", valueText: "Ada" })],
+          branches: [segmentChain(), discountChain()],
+        },
+      ],
+    })
+    const built = buildRule(tiered, [customerLeaves])
+    expect(built.errors).toEqual([])
+    expect(built.body).not.toHaveProperty("branches")
+    expect(built.body?.when).toEqual([
+      { binding: "$customer", type: "Customer", conditions: { field: "age", operator: ">", value: 18 } },
+    ])
+    expect(built.body?.then).toEqual([
+      {
+        binding: "$customer",
+        assignments: [{ field: "name", value: "Ada" }],
+        branches: [
+          {
+            if: { when: { field: "age", operator: ">=", value: 65 }, assignments: [{ field: "segment", value: "SENIOR" }] },
+            elseIf: [{ when: { field: "age", operator: ">=", value: 40 }, assignments: [{ field: "segment", value: "ADULT" }] }],
+            else: { assignments: [{ field: "segment", value: "YOUNG" }] },
+          },
+          {
+            if: { when: { field: "segment", operator: "==", value: "GOLD" }, assignments: [{ field: "discount", value: 0.2 }] },
+            elseIf: [{ when: { field: "segment", operator: "==", value: "SILVER" }, assignments: [{ field: "discount", value: 0.1 }] }],
+            else: { assignments: [{ field: "discount", value: 0.05 }] },
+          },
+        ],
+      },
+    ])
+
+    const twice = rule({
+      whens: [when(comparison({ field: "age", operator: ">", valueText: "18" }))],
+      thens: [
+        {
+          id: "t",
+          binding: "$customer",
+          assignments: [],
+          branches: [
+            {
+              ...segmentChain(),
+              ifArm: {
+                ...segmentChain().ifArm,
+                assignments: [
+                  assignment({ field: "segment", valueText: "SENIOR" }),
+                  assignment({ id: "again", field: "segment", valueText: "ADULT" }),
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    })
+    const duplicated = buildRule(twice, [customerLeaves])
+    expect(duplicated.body).toBeNull()
+    expect(duplicated.errors).toContain("Then block 1, branch 1, if: segment is assigned more than once.")
+  })
+
+  it("reads another fact from a branch and reloads the chains onto the then block", () => {
+    const whens: WhenDraft[] = [
+      when(comparison({ field: "age", operator: ">", valueText: "18" })),
+      { id: "w2", binding: "$order", bindingTouched: true, type: "Order", root: comparison({ id: "approved", field: "total", operator: ">", valueText: "0" }) },
+    ]
+    const leaves = chainLeaves("$order", whens, [customerLeaves, orderLeaves])
+    expect(leaves.map((leaf) => leaf.label)).toEqual([
+      "Customer.name",
+      "Customer.age",
+      "Customer.discount",
+      "Customer.segment",
+      "Customer.approved",
+      "Customer.nickname",
+      "total",
+      "priority",
+    ])
+
+    const built = buildRule(
+      rule({
+        whens,
+        thens: [
+          {
+            id: "order",
+            binding: "$order",
+            assignments: [],
+            branches: [
+              {
+                id: "b",
+                ifArm: {
+                  id: "if",
+                  when: comparison({
+                    id: "cross",
+                    field: "$customer.age",
+                    operator: ">",
+                    rhs: "field",
+                    valueField: "total",
+                  }),
+                  assignments: [assignment({ id: "high", field: "priority", valueText: "HIGH" })],
+                },
+                elseIf: [],
+                otherwise: {
+                  id: "else",
+                  assignments: [assignment({ id: "low", field: "priority", valueText: "LOW" })],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+      [customerLeaves, orderLeaves],
+    )
+    expect(built.errors).toEqual([])
+    expect(built.body).not.toHaveProperty("branches")
+    const then = built.body?.then as { branches: { if: { when: { valueField: string } } }[] }[]
+    expect(then[0].branches[0].if.when.valueField).toBe("$order.total")
+
+    const dates = { effectiveFrom: "2091-01-01T00:00:00", effectiveUntil: "2092-01-01T00:00:00" }
+    const reloaded = draftFromVersion(
+      { code: "tiered", name: "Tiered discount" },
+      versionWith({
+        when: [{ binding: "$customer", type: "Customer", conditions: { field: "age", operator: ">", value: 18 } }],
+        then: [
+          {
+            binding: "$customer",
+            assignments: [],
+            branches: [
+              {
+                if: { when: { field: "$customer.age", operator: ">=", value: 65 }, assignments: [{ field: "segment", value: "SENIOR" }] },
+                elseIf: [{ when: { field: "age", operator: ">=", value: 40 }, assignments: [{ field: "segment", value: "ADULT" }] }],
+                else: { assignments: [{ field: "segment", value: "YOUNG" }] },
+              },
+            ],
+          },
+        ],
+      }),
+      dates,
+    )
+    expect(reloaded.whens[0]?.root).toMatchObject({ field: "age", operator: ">", valueText: "18" })
+    expect(reloaded.thens[0]?.assignments).toEqual([])
+    expect(reloaded.thens[0]?.branches?.[0]?.ifArm.when).toMatchObject({ field: "age", operator: ">=" })
+    expect(reloaded.thens[0]?.branches?.[0]?.otherwise?.assignments[0]).toMatchObject({ field: "segment", valueText: "YOUNG" })
+    const again = buildRule(reloaded, [customerLeaves])
+    expect(again.errors).toEqual([])
+    expect(again.body?.then).toEqual([
+      {
+        binding: "$customer",
+        assignments: [],
+        branches: [
+          {
+            if: { when: { field: "age", operator: ">=", value: 65 }, assignments: [{ field: "segment", value: "SENIOR" }] },
+            elseIf: [{ when: { field: "age", operator: ">=", value: 40 }, assignments: [{ field: "segment", value: "ADULT" }] }],
+            else: { assignments: [{ field: "segment", value: "YOUNG" }] },
+          },
+        ],
+      },
+    ])
+  })
+
+  it("clears a then branch when its fact type changes and renames an untouched binding", () => {
+    const draft = rule({
+      whens: [
+        { ...when(comparison({ field: "age", operator: ">", valueText: "18" })), bindingTouched: false },
+        { id: "w2", binding: "$order", bindingTouched: true, type: "Order", root: emptyComparison() },
+      ],
+      thens: [
+        {
+          id: "t",
+          binding: "$customer",
+          assignments: [assignment({ field: "segment", valueText: "BASE" })],
+          branches: [
+            {
+              id: "b",
+              ifArm: {
+                id: "if",
+                when: comparison({ field: "age", operator: ">", rhs: "field", valueField: "$order.total" }),
+                assignments: [assignment({ id: "seg", field: "segment", valueText: "SENIOR" })],
+              },
+              elseIf: [],
+              otherwise: null,
+            },
+          ],
+        },
+      ],
+    })
+    const next = changeFactType(draft, "w", "Order")
+    expect(next.whens[0]).toMatchObject({ type: "Order", binding: "$order2" })
+    expect(next.thens[0]).toMatchObject({ binding: "$order2" })
+    expect(next.thens[0]?.assignments[0]?.field).toBe("")
+    expect(next.thens[0]?.branches?.[0]?.ifArm.when).toMatchObject({ field: "" })
+    expect(factLabels(next.whens).get("$order2")).toBe("Order 1")
+    expect(factLabels(next.whens).get("$order")).toBe("Order 2")
+  })
+
   it("refuses a fractional value for an integer field", () => {
     const built = buildRule(rule({ whens: [when(comparison({ valueText: "65.5" }))] }), [customerLeaves])
     expect(built.body).toBeNull()
@@ -539,6 +837,57 @@ describe("effective dates", () => {
       effectiveFrom: "2026-10-19T00:00:00",
       effectiveUntil: "2026-10-19T23:59:00",
     })
+  })
+
+  it("names the overlapped window and ignores a version's own dates", () => {
+    const versions: RuleVersion[] = [
+      {
+        id: 1,
+        versionNumber: 1,
+        version: "v1",
+        description: null,
+        effectiveFrom: "2026-11-01T00:00:00+05:30",
+        effectiveUntil: "2026-12-31T23:59:00+05:30",
+        active: false,
+        definition: null,
+        drl: null,
+      },
+      {
+        id: 2,
+        versionNumber: 2,
+        version: "v2",
+        description: null,
+        effectiveFrom: "2027-01-01T00:00:00+05:30",
+        effectiveUntil: "2027-03-31T23:59:00+05:30",
+        segments: [
+          { effectiveFrom: "2027-01-01T00:00:00+05:30", effectiveUntil: "2027-01-31T23:59:00+05:30" },
+          { effectiveFrom: "2027-02-01T00:00:00+05:30", effectiveUntil: "2027-03-31T23:59:00+05:30" },
+        ],
+        active: false,
+        definition: null,
+        drl: null,
+      },
+    ]
+    const hits = overlappingWindows(
+      [
+        { effectiveFrom: "2026-11-01T00:00:00+05:30", effectiveUntil: "2027-01-20T23:59:00+05:30" },
+        { effectiveFrom: "2027-02-01T00:00:00+05:30", effectiveUntil: "2027-02-01T23:59:00+05:30" },
+      ],
+      versions,
+      "v1",
+    )
+    expect(hits.map((hit) => hit.version)).toEqual(["v2", "v2"])
+    expect(hits[0]?.from).toBe(new Date("2027-01-01T00:00:00+05:30").toISOString())
+    expect(hits[0]?.until).toBe(new Date("2027-01-20T23:59:00+05:30").toISOString())
+    expect(hits[1]?.from).toBe(new Date("2027-02-01T00:00:00+05:30").toISOString())
+    expect(hits[1]?.until).toBe(new Date("2027-02-01T23:59:00+05:30").toISOString())
+
+    const touching = overlappingWindows(
+      [{ effectiveFrom: "2026-11-01T00:00:00+05:30", effectiveUntil: "2026-12-31T23:59:00+05:30" }],
+      versions,
+      "v1",
+    )
+    expect(touching).toEqual([])
   })
 
   it("suggests the next India Standard Time day, or now when that day has passed", () => {

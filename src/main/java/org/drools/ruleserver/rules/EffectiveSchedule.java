@@ -23,6 +23,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * The minutes in which one rule version may run. Segments are ordered, do not overlap, and keep a
@@ -101,7 +102,7 @@ public record EffectiveSchedule(List<EffectiveWindow> segments) {
             if (until != null && !EffectiveWindow.isWholeMinute(until) && !storedBound(existing, until)) {
                 minuteErrors.add(untilField + " must be a whole minute");
             }
-            if (from != null && until != null && !until.isAfter(from)) {
+            if (from != null && until != null && !until.isAfter(from) && !storedSegment(existing, from, until)) {
                 local.add(single
                         ? "effectiveUntil must be after effectiveFrom"
                         : untilField + " must be after " + fromField);
@@ -133,33 +134,100 @@ public record EffectiveSchedule(List<EffectiveWindow> segments) {
     }
 
     /**
-     * Removes {@code incoming} from the middle of {@code host}. Each incoming segment has to leave
-     * a minute on both sides. The earlier side cannot end before the current minute, and a segment
-     * that has already ended is left as it is.
+     * Removes every minute of {@code incoming} from {@code host}. A period strictly inside the host
+     * splits it, so the host runs again afterwards. A partial overlap shortens or shifts the host
+     * until the two no longer share a minute. A segment that has already ended cannot change, and a
+     * cut cannot leave a bound before the current minute.
      */
     public static Carve carve(EffectiveSchedule host, EffectiveSchedule incoming, Instant now) {
-        List<EffectiveWindow> remaining = new ArrayList<>(host.segments);
-        for (EffectiveWindow hole : incoming.segments) {
-            int index = splitIndex(remaining, hole);
-            if (index < 0) {
+        List<EffectiveWindow> remaining = new ArrayList<>();
+        for (EffectiveWindow covered : host.segments) {
+            List<EffectiveWindow> pieces = subtract(covered, incoming.segments);
+            if (sameWindow(covered, pieces)) {
+                remaining.add(covered);
                 continue;
             }
-            EffectiveWindow covered = remaining.get(index);
-            if (covered.until() != null && EffectiveWindow.isBeforeCurrent(covered.until(), now)) {
-                return new Carve(null, "a segment that is already before the current time cannot change");
+            String error = lockError(covered, pieces, now);
+            if (error != null) {
+                return new Carve(null, error);
             }
-            Instant leftUntil = hole.from().minus(1, ChronoUnit.MINUTES);
-            Instant rightFrom = hole.until().plus(1, ChronoUnit.MINUTES);
-            if (EffectiveWindow.isBeforeCurrent(leftUntil, now)) {
-                return new Carve(null, "the earlier part would end before the current time");
-            }
-            if (EffectiveWindow.isBeforeCurrent(rightFrom, now)) {
-                return new Carve(null, "the later part would start before the current time");
-            }
-            remaining.set(index, new EffectiveWindow(covered.from(), leftUntil));
-            remaining.add(index + 1, new EffectiveWindow(rightFrom, covered.until()));
+            remaining.addAll(pieces);
         }
-        return new Carve(new EffectiveSchedule(remaining), null);
+        if (remaining.isEmpty()) {
+            return new Carve(null, "it would have no effective dates left");
+        }
+        List<String> errors = new ArrayList<>();
+        List<EffectiveWindow> normalized = normalize(remaining, errors);
+        if (!errors.isEmpty()) {
+            return new Carve(null, errors.get(0));
+        }
+        return new Carve(new EffectiveSchedule(normalized), null);
+    }
+
+    private static List<EffectiveWindow> subtract(EffectiveWindow host, List<EffectiveWindow> holes) {
+        List<EffectiveWindow> pieces = new ArrayList<>();
+        pieces.add(host);
+        for (EffectiveWindow hole : holes) {
+            List<EffectiveWindow> next = new ArrayList<>();
+            for (EffectiveWindow piece : pieces) {
+                next.addAll(subtractOne(piece, hole));
+            }
+            pieces = next;
+        }
+        return pieces;
+    }
+
+    /**
+     * Minutes of {@code host} that {@code hole} does not cover. A one-minute remainder keeps the
+     * same start and end.
+     */
+    private static List<EffectiveWindow> subtractOne(EffectiveWindow host, EffectiveWindow hole) {
+        if (!host.overlaps(hole)) {
+            return List.of(host);
+        }
+        List<EffectiveWindow> pieces = new ArrayList<>();
+        if (host.from().isBefore(hole.from())) {
+            Instant leftUntil = hole.from().minus(1, ChronoUnit.MINUTES);
+            if (!leftUntil.isBefore(host.from())) {
+                pieces.add(new EffectiveWindow(host.from(), leftUntil));
+            }
+        }
+        if (hole.until() != null && (host.until() == null || host.until().isAfter(hole.until()))) {
+            Instant rightFrom = hole.until().plus(1, ChronoUnit.MINUTES);
+            if (host.until() == null || !rightFrom.isAfter(host.until())) {
+                pieces.add(new EffectiveWindow(rightFrom, host.until()));
+            }
+        }
+        return pieces;
+    }
+
+    private static boolean sameWindow(EffectiveWindow covered, List<EffectiveWindow> pieces) {
+        return pieces.size() == 1
+                && pieces.get(0).from().equals(covered.from())
+                && Objects.equals(pieces.get(0).until(), covered.until());
+    }
+
+    private static String lockError(EffectiveWindow covered, List<EffectiveWindow> pieces, Instant now) {
+        if (covered.until() != null && EffectiveWindow.isBeforeCurrent(covered.until(), now)) {
+            return "a segment that is already before the current time cannot change";
+        }
+        if (pieces.isEmpty()) {
+            if (EffectiveWindow.isBeforeCurrent(covered.from(), now)) {
+                return "a segment that is already before the current time cannot change";
+            }
+            return null;
+        }
+        for (EffectiveWindow piece : pieces) {
+            boolean fromMoved = !piece.from().equals(covered.from());
+            boolean untilMoved = !Objects.equals(piece.until(), covered.until());
+            if (untilMoved && piece.until() != null && EffectiveWindow.isBeforeCurrent(piece.until(), now)) {
+                return "the earlier part would end before the current time";
+            }
+            if (fromMoved && EffectiveWindow.isBeforeCurrent(piece.from(), now)) {
+                return "the later part would start before the current time";
+            }
+        }
+        return null;
     }
 
     private static List<String> validateNew(EffectiveSchedule schedule, Instant now) {
@@ -237,24 +305,6 @@ public record EffectiveSchedule(List<EffectiveWindow> segments) {
         return previous.until() != null && previous.until().plus(1, ChronoUnit.MINUTES).equals(next.from());
     }
 
-    private static int splitIndex(List<EffectiveWindow> windows, EffectiveWindow hole) {
-        if (hole.until() == null) {
-            return -1;
-        }
-        Instant leftUntil = hole.from().minus(1, ChronoUnit.MINUTES);
-        Instant rightFrom = hole.until().plus(1, ChronoUnit.MINUTES);
-        for (int i = 0; i < windows.size(); i++) {
-            EffectiveWindow host = windows.get(i);
-            if (host.until() == null) {
-                continue;
-            }
-            if (leftUntil.isAfter(host.from()) && host.until().isAfter(rightFrom)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
     private static EffectiveWindow sameFrom(List<EffectiveWindow> windows, Instant from) {
         for (EffectiveWindow window : windows) {
             if (window.from().equals(from)) {
@@ -262,6 +312,18 @@ public record EffectiveSchedule(List<EffectiveWindow> segments) {
             }
         }
         return null;
+    }
+
+    private static boolean storedSegment(EffectiveSchedule existing, Instant from, Instant until) {
+        if (existing == null || from == null || until == null) {
+            return false;
+        }
+        for (EffectiveWindow window : existing.segments) {
+            if (from.equals(window.from()) && until.equals(window.until())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean storedBound(EffectiveSchedule existing, Instant instant) {

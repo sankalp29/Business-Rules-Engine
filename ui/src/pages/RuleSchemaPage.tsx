@@ -12,9 +12,12 @@ export function RuleSchemaPage() {
   const definition = version.definition
 
   return (
-    <div className="schema-grid">
-      <SchemaColumn title="Reads" facts={definition?.inputSchema ?? []} empty="This version reads no fields." />
-      <SchemaColumn title="Writes" facts={definition?.outputSchema ?? []} empty="This version writes no fields." />
+    <div className="stack">
+      <p className="note">Fields this version reads and writes.</p>
+      <div className="schema-grid">
+        <SchemaColumn title="Reads" facts={definition?.inputSchema ?? []} empty="This version reads no fields." />
+        <SchemaColumn title="Writes" facts={definition?.outputSchema ?? []} empty="This version writes no fields." />
+      </div>
     </div>
   )
 }

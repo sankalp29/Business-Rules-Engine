@@ -29,7 +29,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  * India Standard Time calendar date ({@code YYYY-MM-DD}) or an ISO-8601 timestamp at a whole
  * minute. Neither bound can be before the current minute, and {@code effectiveUntil} is after
  * {@code effectiveFrom}. {@code segments} replaces that pair when it is present, so one version
- * can run in several separate periods.
+ * can run in several separate periods. {@code when} is the gate. Each then block may hold
+ * assignments and if / else-if / else branches for its fact.
  */
 @JsonIgnoreProperties("facts")
 public record RuleSubmission(

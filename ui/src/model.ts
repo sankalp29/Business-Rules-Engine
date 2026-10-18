@@ -42,7 +42,7 @@ export type Condition = {
 export type WhenBlock = {
   binding: string
   type: string
-  conditions: Condition
+  conditions?: Condition | null
 }
 
 export type Assignment = {
@@ -51,9 +51,24 @@ export type Assignment = {
   expression?: string
 }
 
+/** One arm of an if / else-if / else chain. Else has no `when`. */
+export type BranchArm = {
+  when?: Condition | null
+  assignments: Assignment[]
+}
+
+/** An exclusive chain. The first matching arm runs. */
+export type Branch = {
+  if: BranchArm
+  elseIf?: BranchArm[] | null
+  else?: BranchArm | null
+}
+
 export type ThenBlock = {
   binding: string
   assignments: Assignment[]
+  /** If / else-if / else chains. They run after `assignments`, once the when condition matches. */
+  branches?: Branch[] | null
 }
 
 export type RuleDefinition = {
@@ -69,6 +84,34 @@ export type EffectiveSegment = {
   effectiveUntil: string | null
 }
 
+export type StageStatus = "complete" | "current" | "upcoming"
+
+export type StageMark = {
+  name: string
+  label: string
+  status: StageStatus
+}
+
+/** Present only while a rejection has sent the version back to draft. */
+export type RejectionNote = {
+  stage: string
+  label: string
+  comment: string
+  at?: string | null
+}
+
+export type ApprovalWorkflow = {
+  id: number
+  versionNumber: number
+  version: string
+  active: boolean
+  /** Labels from Draft through Approved. */
+  stages: string[]
+  /** Names between Draft and Approved. */
+  middleStages: string[]
+  createdAt?: string
+}
+
 export type RuleVersion = {
   id: number | null
   versionNumber: number
@@ -82,6 +125,14 @@ export type RuleVersion = {
   definition: RuleDefinition | null
   drl: string | null
   createdAt?: string
+  /** Missing on a response from a server that predates approval. Null counts as already approved. */
+  stage?: string | null
+  stageLabel?: string | null
+  editable?: boolean | null
+  workflowVersion?: string | null
+  /** The path this version follows, marked for the latest pass from draft. */
+  stages?: StageMark[] | null
+  returnedFrom?: RejectionNote | null
 }
 
 export type RuleResponse = {
@@ -115,6 +166,12 @@ export type ExecutionResponse = {
 export type Leaf = {
   path: string
   type: string
+  /** Shown in a menu. The stored path stays in `path`. */
+  label?: string
+}
+
+export function leafText(leaf: Leaf): string {
+  return `${leaf.label ?? leaf.path} · ${leaf.type}`
 }
 
 const SCALAR_SET: ReadonlySet<string> = new Set(SCALAR_TYPES)

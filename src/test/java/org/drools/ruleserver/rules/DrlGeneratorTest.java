@@ -29,6 +29,8 @@ import java.util.Map;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.NullNode;
 
+import org.drools.ruleserver.model.Branch;
+import org.drools.ruleserver.model.BranchArm;
 import org.drools.ruleserver.model.Condition;
 import org.drools.ruleserver.model.FactDeclaration;
 import org.drools.ruleserver.model.FieldAssignment;
@@ -153,6 +155,96 @@ class DrlGeneratorTest {
                         Condition.comparison("name", "==", mapper.getNodeFactory().textNode("a\"b ) then end")))),
                 List.of(new ThenBlock("$customer", List.of(assignment("name", mapper.getNodeFactory().textNode("ok"), null)))));
         assertThat(generator.generate(hostile, customer)).contains("name == \"a\\\"b ) then end\"");
+    }
+
+    @Test
+    void compilesABranchAsAnIfElseIfElseChain() {
+        List<FactDeclaration> facts = List.of(new FactDeclaration("Customer", List.of(
+                new FieldDeclaration("name", "String"),
+                new FieldDeclaration("age", "int"),
+                new FieldDeclaration("segment", "String"),
+                new FieldDeclaration("discount", "double"))));
+        Branch tier = new Branch(
+                new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(65)),
+                        List.of(assignment("segment", mapper.getNodeFactory().textNode("SENIOR"), null))),
+                List.of(new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(40)),
+                        List.of(assignment("segment", mapper.getNodeFactory().textNode("ADULT"), null)))),
+                new BranchArm(null, List.of(assignment("segment", mapper.getNodeFactory().textNode("YOUNG"), null))));
+        Branch discount = new Branch(
+                new BranchArm(Condition.comparison("segment", "==", mapper.getNodeFactory().textNode("GOLD")),
+                        List.of(assignment("discount", mapper.getNodeFactory().numberNode(0.2), null))),
+                null,
+                new BranchArm(null, List.of(assignment("discount", mapper.getNodeFactory().numberNode(0.05), null))));
+        RuleDefinition definition = new RuleDefinition(
+                "tiered",
+                "Tiered discount",
+                null,
+                null,
+                null,
+                null,
+                List.of(new WhenBlock("$customer", "Customer",
+                        Condition.comparison("age", ">", mapper.getNodeFactory().numberNode(18)))),
+                List.of(new ThenBlock("$customer", List.of(), List.of(tier, discount))));
+
+        String drl = generator.generate(definition, facts);
+
+        assertThat(drl).contains("$customer : Customer( age > 18 )");
+        assertThat(drl).contains("boolean then0b0a0 = $customer.getAge() >= 65;");
+        assertThat(drl).contains("boolean then0b0a1 = $customer.getAge() >= 40;");
+        assertThat(drl).contains("if ( then0b0a0 ) {");
+        assertThat(drl).contains("} else if ( then0b0a1 ) {");
+        assertThat(drl).contains("$customer.setSegment( \"SENIOR\" );");
+        assertThat(drl).contains("$customer.setSegment( \"ADULT\" );");
+        assertThat(drl).contains("$customer.setSegment( \"YOUNG\" );");
+        assertThat(drl).contains("boolean then0b1a0 = java.util.Objects.equals( $customer.getSegment(), \"GOLD\" );");
+        assertThat(drl).contains("$customer.setDiscount( 0.2 );");
+        assertThat(drl).contains("$customer.setDiscount( 0.05 );");
+        assertThat(drl).doesNotContain("branchHits");
+        assertThat(drl).doesNotContain("modify(");
+    }
+
+    @Test
+    void anUnconditionalAssignmentRunsBeforeTheBranchChain() {
+        List<FactDeclaration> facts = List.of(
+                new FactDeclaration("Address", List.of(new FieldDeclaration("city", "String"))),
+                new FactDeclaration("Customer", List.of(
+                        new FieldDeclaration("name", "String"),
+                        new FieldDeclaration("age", "int"),
+                        new FieldDeclaration("segment", "String"),
+                        new FieldDeclaration("address", "Address"))));
+        Branch edge = new Branch(
+                new BranchArm(Condition.group("or", List.of(
+                        Condition.comparison("name", "==", mapper.getNodeFactory().textNode("Ada")),
+                        Condition.comparison("age", "<", mapper.getNodeFactory().numberNode(18)))),
+                        List.of(assignment("segment", mapper.getNodeFactory().textNode("EDGE"), null))),
+                List.of(new BranchArm(
+                        Condition.comparison("address.city", "!=", mapper.getNodeFactory().textNode("Pune")),
+                        List.of(assignment("segment", mapper.getNodeFactory().textNode("AWAY"), null)))),
+                null);
+        RuleDefinition definition = new RuleDefinition(
+                "tiered",
+                "Tiered",
+                null,
+                null,
+                null,
+                null,
+                List.of(new WhenBlock("$customer", "Customer", null)),
+                List.of(new ThenBlock("$customer",
+                        List.of(assignment("segment", mapper.getNodeFactory().textNode("BASE"), null)),
+                        List.of(edge))));
+
+        String drl = generator.generate(definition, facts);
+
+        assertThat(drl).doesNotContain("branchHits");
+        assertThat(drl).contains("modify( $customer ) { setSegment( \"BASE\" ) };");
+        assertThat(drl).contains(
+                "boolean then0b0a0 = java.util.Objects.equals( $customer.getName(), \"Ada\" ) || $customer.getAge() < 18;");
+        assertThat(drl).contains(
+                "boolean then0b0a1 = ( $customer.getAddress() != null && !java.util.Objects.equals( $customer.getAddress().getCity(), \"Pune\" ) );");
+        assertThat(drl).contains("if ( then0b0a0 ) {");
+        assertThat(drl).contains("} else if ( then0b0a1 ) {");
+        assertThat(drl).contains("$customer.setSegment( \"EDGE\" );");
+        assertThat(drl).contains("$customer.setSegment( \"AWAY\" );");
     }
 
     private RuleDefinition read(String path) throws Exception {

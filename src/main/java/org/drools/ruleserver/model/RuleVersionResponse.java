@@ -27,6 +27,9 @@ import java.util.List;
  * of the first segment and {@code effectiveUntil} is the end of the last. {@code active} is true
  * when the current minute falls inside a segment, including when a later segment resumes after a
  * gap. {@code effectiveUntil} is null only for a rule stored before versions existed.
+ * {@code stage} is the current approval step. {@code stages} is the path this version follows,
+ * marked only for the latest pass from draft. {@code editable} is true in draft.
+ * {@code returnedFrom} is the rejection that sent the version back, while it is still in draft.
  */
 public record RuleVersionResponse(
         Long id,
@@ -39,5 +42,11 @@ public record RuleVersionResponse(
         boolean active,
         RuleDefinition definition,
         String drl,
-        Instant createdAt) {
+        Instant createdAt,
+        String stage,
+        String stageLabel,
+        boolean editable,
+        String workflowVersion,
+        List<StageMark> stages,
+        RejectionNote returnedFrom) {
 }

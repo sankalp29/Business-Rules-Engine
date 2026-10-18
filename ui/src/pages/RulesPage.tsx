@@ -3,8 +3,8 @@ import { Link } from "react-router-dom"
 import { ApiError, api } from "../api"
 import { Banner } from "../components/Banner"
 import { PageHead } from "../components/PageHead"
-import { activeVersionOf, formatWhen, latestVersion, ruleKey } from "../format"
-import type { RuleDefinition, RuleResponse } from "../model"
+import { latestVersion, ruleKey, versionSummary } from "../format"
+import type { RuleResponse } from "../model"
 
 export function RulesPage() {
   const [rules, setRules] = useState<RuleResponse[] | null>(null)
@@ -75,17 +75,17 @@ export function RulesPage() {
             />
           </label>
           {shown.length === 0 ? <p className="note">No rule matches that search.</p> : null}
-          <div className="rule-list">
+          <div className="catalog">
             {shown.map((rule) => {
               const blurb = cardDescription(rule)
               return (
-                <Link key={rule.id} className="sheet rule-card" to={`/rules/${encodeURIComponent(ruleKey(rule))}`}>
-                  {rule.code ? <p className="eyebrow">{rule.code}</p> : null}
-                  <h2>{rule.name || "Untitled rule"}</h2>
-                  {blurb ? <p>{blurb}</p> : null}
-                  <p className="quiet">{versionLine(rule)}</p>
-                  <p className="mono quiet">{whenSummary(summaryDefinition(rule))}</p>
-                  <p className="quiet">{formatWhen(rule.createdAt)}</p>
+                <Link key={rule.id} className="catalog-row" to={`/rules/${encodeURIComponent(ruleKey(rule))}`}>
+                  <div className="catalog-copy">
+                    {rule.code ? <p className="catalog-code">{rule.code}</p> : null}
+                    <h2>{rule.name || "Untitled rule"}</h2>
+                    {blurb ? <p className="catalog-blurb">{blurb}</p> : null}
+                  </div>
+                  <p className="catalog-meta">{versionSummary(rule)}</p>
                 </Link>
               )
             })}
@@ -102,20 +102,4 @@ function cardDescription(rule: RuleResponse): string | null {
   return latestVersion(rule)?.description ?? null
 }
 
-function versionLine(rule: RuleResponse): string {
-  const count = rule.versions?.length ?? 0
-  const noun = `${count} ${count === 1 ? "version" : "versions"}`
-  const active = activeVersionOf(rule)
-  if (!active) return `${noun} · none active now`
-  return `${noun} · ${active.version} active now`
-}
 
-function summaryDefinition(rule: RuleResponse): RuleDefinition | null {
-  return rule.definition ?? latestVersion(rule)?.definition ?? null
-}
-
-function whenSummary(definition: RuleDefinition | null): string {
-  const blocks = definition?.when ?? []
-  if (blocks.length === 0) return "No when block"
-  return blocks.map((block) => block.type).join("   ")
-}

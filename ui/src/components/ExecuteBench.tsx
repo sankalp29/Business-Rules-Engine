@@ -9,11 +9,11 @@ import { SchemaFields } from "./SchemaFields"
 export function ExecuteBench({
   ruleKey,
   schema,
-  activeVersion,
+  note,
 }: {
   ruleKey: string
   schema: FactSchema[]
-  activeVersion: string | null
+  note: string
 }) {
   const [facts, setFacts] = useState<FactDraft[]>(() => factsFromSchema(schema))
   const [result, setResult] = useState<ExecutionResponse | null>(null)
@@ -44,8 +44,8 @@ export function ExecuteBench({
       <header className="sheet-head">
         <h2>Execution</h2>
       </header>
-      <p className="note">{executionNote(activeVersion)}</p>
-      <p className="note">Enter the fields the active version reads. Blank text and numbers are left unset. A true or false choice is always sent.</p>
+      <p className="note">{note}</p>
+      <p className="note">Enter the fields this run reads. Blank text and numbers are left unset. A true or false choice is always sent.</p>
       {schema.length === 0 ? (
         <p className="note">This rule's input schema has no fields.</p>
       ) : (
@@ -106,13 +106,6 @@ export function ExecuteBench({
       {result ? <ExecutionResult result={result} /> : null}
     </section>
   )
-}
-
-function executionNote(activeVersion: string | null): string {
-  if (activeVersion) {
-    return `Running the rule uses ${activeVersion}, the version whose dates include this moment.`
-  }
-  return "No version is active right now. Running the rule fails until a version's dates include this moment."
 }
 
 function indexLabel(facts: FactDraft[], fact: FactDraft, index: number): string {

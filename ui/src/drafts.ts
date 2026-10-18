@@ -1,5 +1,7 @@
 import type {
   Assignment,
+  Branch,
+  BranchArm,
   Condition,
   FactSchema,
   FieldDecl,
@@ -17,6 +19,7 @@ import {
   istInputValue,
   istInstant,
   istOffset,
+  periodsOf,
   roundUpMinute,
 } from "./format"
 import { bindingFor, controlKind, isPrimitive, isScalar, operatorsFor, sameFamily, uid } from "./model"
@@ -137,14 +140,43 @@ export function emptyWhen(type = ""): WhenDraft {
   }
 }
 
+/** One arm. Else omits `when`. */
+export type ArmDraft = {
+  id: string
+  when?: ConditionDraft
+  assignments: AssignmentDraft[]
+}
+
+/** An if / else-if / else chain on one then block. */
+export type BranchDraft = {
+  id: string
+  ifArm: ArmDraft
+  elseIf: ArmDraft[]
+  otherwise: ArmDraft | null
+}
+
 export type ThenDraft = {
   id: string
   binding: string
   assignments: AssignmentDraft[]
+  /** Exclusive chains. They run after the assignments, once the when condition matches. */
+  branches?: BranchDraft[]
 }
 
 export function emptyThen(binding = ""): ThenDraft {
-  return { id: uid(), binding, assignments: [emptyAssignment()] }
+  return { id: uid(), binding, assignments: [emptyAssignment()], branches: [] }
+}
+
+export function emptyArm(withWhen = true): ArmDraft {
+  return {
+    id: uid(),
+    ...(withWhen ? { when: emptyComparison() } : {}),
+    assignments: [emptyAssignment()],
+  }
+}
+
+export function emptyBranch(): BranchDraft {
+  return { id: uid(), ifArm: emptyArm(true), elseIf: [], otherwise: null }
 }
 
 export type PeriodDraft = {
@@ -275,7 +307,10 @@ export function editEffectiveDates(input: {
   if (until.errors.length === 0 && !locks.untilLocked && untilDate && isBeforeCurrentMinute(untilDate, now)) {
     errors.push("The end cannot be before the current time.")
   }
-  if (fromDate && untilDate && untilDate.getTime() <= fromDate.getTime()) {
+  const echoedPair = from.value === input.storedFrom && until.value === input.storedUntil
+  if (fromDate && untilDate && untilDate.getTime() < fromDate.getTime()) {
+    errors.push("The end must be later than the start.")
+  } else if (fromDate && untilDate && untilDate.getTime() === fromDate.getTime() && !echoedPair) {
     errors.push("The end must be later than the start.")
   }
   if (errors.length > 0 || !from.value || !until.value) return { body: null, errors }
@@ -336,6 +371,82 @@ export function editEffectiveSegments(input: {
     },
     errors,
   }
+}
+
+export type DateOverlap = {
+  version: string
+  from: string
+  until: string | null
+}
+
+/** Minutes another version already owns inside the dates about to be saved. */
+export function overlappingWindows(
+  proposed: readonly { effectiveFrom: string; effectiveUntil: string }[],
+  versions: readonly Pick<RuleVersion, "version" | "effectiveFrom" | "effectiveUntil" | "segments">[],
+  currentVersion: string,
+): DateOverlap[] {
+  const hits: DateOverlap[] = []
+  const seen = new Set<string>()
+  for (const version of versions) {
+    if (version.version === currentVersion) continue
+    for (const period of periodsOf(version)) {
+      for (const next of proposed) {
+        const overlap = minuteIntersection(next.effectiveFrom, next.effectiveUntil, period.effectiveFrom, period.effectiveUntil)
+        if (!overlap) continue
+        const key = `${version.version}|${overlap.from}|${overlap.until ?? "open"}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        hits.push({ version: version.version, from: overlap.from, until: overlap.until })
+      }
+    }
+  }
+  return hits
+}
+
+export function periodsOfSubmission(body: {
+  effectiveFrom?: unknown
+  effectiveUntil?: unknown
+  segments?: unknown
+}): { effectiveFrom: string; effectiveUntil: string }[] {
+  if (Array.isArray(body.segments) && body.segments.length > 0) {
+    return body.segments.flatMap((segment) => {
+      if (!segment || typeof segment !== "object") return []
+      const from = "effectiveFrom" in segment ? segment.effectiveFrom : null
+      const until = "effectiveUntil" in segment ? segment.effectiveUntil : null
+      if (typeof from !== "string" || typeof until !== "string") return []
+      return [{ effectiveFrom: from, effectiveUntil: until }]
+    })
+  }
+  if (typeof body.effectiveFrom === "string" && typeof body.effectiveUntil === "string") {
+    return [{ effectiveFrom: body.effectiveFrom, effectiveUntil: body.effectiveUntil }]
+  }
+  return []
+}
+
+function minuteIntersection(
+  aFrom: string,
+  aUntil: string,
+  bFrom: string,
+  bUntil: string | null,
+): { from: string; until: string | null } | null {
+  const startA = minuteOf(aFrom)
+  const endA = minuteOf(aUntil)
+  const startB = minuteOf(bFrom)
+  const endB = bUntil ? minuteOf(bUntil) : null
+  if (startA == null || endA == null || startB == null || (bUntil != null && endB == null)) return null
+  if (endA < startB) return null
+  if (endB != null && endB < startA) return null
+  const from = Math.max(startA, startB)
+  const until = endB == null ? endA : Math.min(endA, endB)
+  if (until < from) return null
+  return { from: new Date(from * 60_000).toISOString(), until: new Date(until * 60_000).toISOString() }
+}
+
+function minuteOf(value: string | null | undefined): number | null {
+  if (!value) return null
+  const date = istInstant(value)
+  if (!date) return null
+  return Math.floor(date.getTime() / 60_000)
 }
 
 function minutesOverlap(periods: { effectiveFrom: string; effectiveUntil: string }[]): boolean {
@@ -500,20 +611,281 @@ export function compatibleFields(options: ValueFieldOption[], type: string | und
   return options.filter((option) => sameFamily(type, option.type))
 }
 
+/** Type name, or "Customer 1" when the same type is bound more than once. A fact with no type is "Fact". */
+export function factLabels(facts: readonly { binding: string; type: string }[]): Map<string, string> {
+  const counts = new Map<string, number>()
+  let untyped = 0
+  for (const fact of facts) {
+    if (!fact.binding.trim()) continue
+    const type = fact.type.trim()
+    if (!type) {
+      untyped += 1
+      continue
+    }
+    counts.set(type, (counts.get(type) ?? 0) + 1)
+  }
+  const seen = new Map<string, number>()
+  const labels = new Map<string, string>()
+  for (const fact of facts) {
+    const binding = fact.binding.trim()
+    if (!binding || labels.has(binding)) continue
+    const type = fact.type.trim()
+    if (!type) {
+      const index = (seen.get("") ?? 0) + 1
+      seen.set("", index)
+      labels.set(binding, untyped > 1 ? `Fact ${index}` : "Fact")
+      continue
+    }
+    const index = (seen.get(type) ?? 0) + 1
+    seen.set(type, index)
+    const total = counts.get(type) ?? 1
+    labels.set(binding, total > 1 ? `${type} ${index}` : type)
+  }
+  return labels
+}
+
+/**
+ * Condition menus for a chain on `binding`.
+ * This fact's fields stay local (`age`). Every other fact is `$binding.field`, labelled `Order.total`.
+ */
+export function chainLeaves(binding: string, whens: readonly WhenDraft[], leavesByWhen: readonly Leaf[][]): Leaf[] {
+  const labels = factLabels(whens)
+  const self = binding.trim()
+  const leaves: Leaf[] = []
+  whens.forEach((when, index) => {
+    const whenBinding = when.binding.trim()
+    if (!whenBinding) return
+    const own = whenBinding === self
+    const typeLabel = labels.get(whenBinding) ?? (when.type.trim() || whenBinding.slice(1))
+    for (const leaf of leavesByWhen[index] ?? []) {
+      if (own) {
+        leaves.push({ path: leaf.path, type: leaf.type, label: leaf.path })
+      } else {
+        leaves.push({
+          path: `${whenBinding}.${leaf.path}`,
+          type: leaf.type,
+          label: `${typeLabel}.${leaf.path}`,
+        })
+      }
+    }
+  })
+  return leaves
+}
+
+export function chainValueFields(binding: string, whens: readonly WhenDraft[], leavesByWhen: readonly Leaf[][]): ValueFieldOption[] {
+  return chainLeaves(binding, whens, leavesByWhen).map((leaf) => ({
+    value: leaf.path,
+    type: leaf.type,
+    label: leaf.label ?? leaf.path,
+  }))
+}
+
+export function isBlankCondition(node: ConditionDraft): boolean {
+  return node.kind === "comparison" && node.field.trim() === ""
+}
+
+export function uniqueBinding(typeName: string, taken: readonly string[]): string {
+  const base = bindingFor(typeName)
+  const used = new Set(taken.map((item) => item.trim()).filter(Boolean))
+  if (!used.has(base)) return base
+  let suffix = 2
+  while (used.has(`${base}${suffix}`)) suffix += 1
+  return `${base}${suffix}`
+}
+
+/** Append an empty if / else-if / else chain to one then block. */
+export function addBranch(draft: RuleDraft, thenId: string): RuleDraft {
+  return {
+    ...draft,
+    thens: draft.thens.map((block) =>
+      block.id === thenId ? { ...block, branches: [...(block.branches ?? []), emptyBranch()] } : block,
+    ),
+  }
+}
+
+export function addFact(draft: RuleDraft): RuleDraft {
+  return { ...draft, whens: [...draft.whens, emptyWhen()] }
+}
+
+/** Drop one chain. A then block left with no assignments and no chains gets one blank assignment. */
+export function removeBranch(draft: RuleDraft, thenId: string, branchId: string): RuleDraft {
+  return {
+    ...draft,
+    thens: draft.thens.map((block) => {
+      if (block.id !== thenId) return block
+      const branches = (block.branches ?? []).filter((branch) => branch.id !== branchId)
+      const assignments = branches.length === 0 && block.assignments.length === 0 ? [emptyAssignment()] : block.assignments
+      return { ...block, branches, assignments }
+    }),
+  }
+}
+
+export function changeFactType(draft: RuleDraft, id: string, type: string): RuleDraft {
+  const when = draft.whens.find((item) => item.id === id)
+  if (!when) return draft
+  const typeChanged = type !== when.type
+  const others = draft.whens.filter((item) => item.id !== id).map((item) => item.binding.trim())
+  const binding = when.bindingTouched ? when.binding : uniqueBinding(type, others)
+  return replaceWhen(draft, id, {
+    ...when,
+    type,
+    binding,
+    root: typeChanged ? emptyComparison() : when.root,
+  })
+}
+
+export function replaceWhen(draft: RuleDraft, id: string, nextWhen: WhenDraft): RuleDraft {
+  const previous = draft.whens.find((when) => when.id === id)
+  if (!previous) return draft
+  let next: RuleDraft = { ...draft, whens: draft.whens.map((when) => (when.id === id ? nextWhen : when)) }
+  if (previous.binding !== nextWhen.binding) next = renameBinding(next, previous.binding, nextWhen.binding)
+  if (previous.type !== nextWhen.type) next = clearFactFields(next, nextWhen.binding.trim())
+  return next
+}
+
+export function removeWhen(draft: RuleDraft, id: string): RuleDraft {
+  if (draft.whens.length < 2) return draft
+  const removed = draft.whens.find((when) => when.id === id)
+  if (!removed) return draft
+  const whens = draft.whens.filter((when) => when.id !== id)
+  const alive = new Set(whens.map((when) => when.binding))
+  const fallback = whens[0]?.binding ?? ""
+  const removedBinding = removed.binding.trim()
+  return {
+    ...draft,
+    whens,
+    thens: draft.thens.map((block) => {
+      const orphan = !alive.has(block.binding)
+      const next = orphan ? { ...block, binding: fallback, assignments: block.assignments.map(clearAssignmentField) } : block
+      return {
+        ...next,
+        branches: (next.branches ?? []).map((branch) =>
+          mapBranch(branch, (node) => {
+            const cleared = clearConditionBinding(node, removedBinding)
+            return orphan ? clearLocalCondition(cleared) : cleared
+          }),
+        ),
+      }
+    }),
+  }
+}
+
+function renameBinding(draft: RuleDraft, from: string, to: string): RuleDraft {
+  if (!from || from === to) return draft
+  return {
+    ...draft,
+    thens: draft.thens.map((block) => ({
+      ...block,
+      binding: block.binding === from ? to : block.binding,
+      branches: (block.branches ?? []).map((branch) => mapBranch(branch, (node) => renameCondition(node, from, to))),
+    })),
+  }
+}
+
+/** The fact's fields changed, so drop assignments and comparisons that still name them. */
+function clearFactFields(draft: RuleDraft, binding: string): RuleDraft {
+  if (!binding) return draft
+  return {
+    ...draft,
+    thens: draft.thens.map((block) => {
+      const own = block.binding.trim() === binding
+      return {
+        ...block,
+        assignments: own ? block.assignments.map(clearAssignmentField) : block.assignments,
+        branches: (block.branches ?? []).map((branch) => mapBranch(branch, (node) => clearFactCondition(node, binding, own))),
+      }
+    }),
+  }
+}
+
+function clearAssignmentField(assignment: AssignmentDraft): AssignmentDraft {
+  return { ...assignment, field: "", valueText: "", valueBool: false, valueNull: false }
+}
+
+function mapBranch(branch: BranchDraft, mapNode: (node: ConditionDraft) => ConditionDraft): BranchDraft {
+  const mapArm = (arm: ArmDraft): ArmDraft => (arm.when ? { ...arm, when: mapNode(arm.when) } : arm)
+  return {
+    ...branch,
+    ifArm: mapArm(branch.ifArm),
+    elseIf: branch.elseIf.map(mapArm),
+    otherwise: branch.otherwise ? mapArm(branch.otherwise) : null,
+  }
+}
+
+function renameCondition(node: ConditionDraft, from: string, to: string): ConditionDraft {
+  if (node.kind === "group") return { ...node, children: node.children.map((child) => renameCondition(child, from, to)) }
+  return { ...node, field: renamePath(node.field, from, to), valueField: renamePath(node.valueField, from, to) }
+}
+
+function renamePath(path: string, from: string, to: string): string {
+  if (path === from) return to
+  const prefix = `${from}.`
+  if (path.startsWith(prefix)) return `${to}${path.slice(from.length)}`
+  return path
+}
+
+function clearConditionBinding(node: ConditionDraft, binding: string): ConditionDraft {
+  if (!binding) return node
+  if (node.kind === "group") return { ...node, children: node.children.map((child) => clearConditionBinding(child, binding)) }
+  const prefix = `${binding}.`
+  const fieldHit = node.field === binding || node.field.startsWith(prefix)
+  const valueHit = node.valueField === binding || node.valueField.startsWith(prefix)
+  if (fieldHit) {
+    return { ...node, field: "", operator: "==", rhs: "value", valueText: "", valueBool: false, valueNull: false, valueField: "" }
+  }
+  if (valueHit) return { ...node, valueField: "" }
+  return node
+}
+
+function clearFactCondition(node: ConditionDraft, binding: string, own: boolean): ConditionDraft {
+  if (node.kind === "group") {
+    return { ...node, children: node.children.map((child) => clearFactCondition(child, binding, own)) }
+  }
+  const fieldHit = pathBelongsToFact(node.field, binding, own)
+  const valueHit = node.rhs === "field" && pathBelongsToFact(node.valueField, binding, own)
+  if (fieldHit) {
+    return { ...node, field: "", operator: "==", rhs: "value", valueText: "", valueBool: false, valueNull: false, valueField: "" }
+  }
+  if (valueHit) return { ...node, valueField: "" }
+  return node
+}
+
+function clearLocalCondition(node: ConditionDraft): ConditionDraft {
+  if (node.kind === "group") return { ...node, children: node.children.map(clearLocalCondition) }
+  const field = node.field.trim()
+  if (field.startsWith("$") || field === "") {
+    if (node.rhs === "field" && node.valueField.trim() && !node.valueField.trim().startsWith("$")) {
+      return { ...node, valueField: "" }
+    }
+    return node
+  }
+  return { ...node, field: "", operator: "==", rhs: "value", valueText: "", valueBool: false, valueNull: false, valueField: "" }
+}
+
+function pathBelongsToFact(path: string, binding: string, own: boolean): boolean {
+  const trimmed = path.trim()
+  if (!trimmed) return false
+  if (trimmed === binding || trimmed.startsWith(`${binding}.`)) return true
+  return own && !trimmed.startsWith("$")
+}
+
 export type RuleBuild = {
   body: Record<string, unknown> | null
   errors: string[]
 }
 
+/** Description, salience, when, and then. Dates stay on the version and are not part of this body. */
+export function buildLogic(draft: RuleDraft, leavesByWhen: Leaf[][]): RuleBuild {
+  const errors: string[] = []
+  const identity = ruleIdentity(draft, errors)
+  const parts = logicParts(draft, leavesByWhen, errors)
+  if (!identity || errors.length > 0 || !parts) return { body: null, errors }
+  return { body: logicBody(identity, parts), errors }
+}
+
 export function buildRule(draft: RuleDraft, leavesByWhen: Leaf[][], now: Date = new Date()): RuleBuild {
   const errors: string[] = []
-  const code = draft.code.trim()
-  const name = draft.name.trim()
-  if (!code) errors.push("Enter a code.")
-  else if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(code)) {
-    errors.push("Code must start with a letter and use only letters, digits, underscores, or hyphens.")
-  }
-  if (!name) errors.push("Enter a name.")
+  const identity = ruleIdentity(draft, errors)
 
   const periods: PeriodDraft[] = [
     { effectiveFrom: draft.effectiveFrom.trim(), effectiveUntil: draft.effectiveUntil.trim() },
@@ -545,6 +917,45 @@ export function buildRule(draft: RuleDraft, leavesByWhen: Leaf[][], now: Date = 
     errors.push("Periods overlap each other.")
   }
 
+  const parts = logicParts(draft, leavesByWhen, errors)
+  if (!identity || errors.length > 0 || !parts) return { body: null, errors }
+
+  const first = builtPeriods[0]
+  if (!first) return { body: null, errors }
+  const body: Record<string, unknown> = {
+    code: identity.code,
+    name: identity.name,
+    effectiveFrom: first.effectiveFrom,
+    effectiveUntil: first.effectiveUntil,
+  }
+  if (builtPeriods.length > 1) body.segments = builtPeriods
+  if (parts.description) body.description = parts.description
+  if (parts.salience !== undefined) body.salience = parts.salience
+  body.when = parts.when
+  body.then = parts.then
+  return { body, errors }
+}
+
+function ruleIdentity(draft: RuleDraft, errors: string[]): { code: string; name: string } | null {
+  const code = draft.code.trim()
+  const name = draft.name.trim()
+  if (!code) errors.push("Enter a code.")
+  else if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(code)) {
+    errors.push("Code must start with a letter and use only letters, digits, underscores, or hyphens.")
+  }
+  if (!name) errors.push("Enter a name.")
+  if (!code || !name || errors.length > 0) return null
+  return { code, name }
+}
+
+type LogicParts = {
+  description: string
+  salience?: number
+  when: WhenBlock[]
+  then: ThenBlock[]
+}
+
+function logicParts(draft: RuleDraft, leavesByWhen: Leaf[][], errors: string[]): LogicParts | null {
   let salience: number | undefined
   if (draft.salience.trim()) {
     const parsed = parseNumber(draft.salience.trim(), true)
@@ -552,41 +963,40 @@ export function buildRule(draft: RuleDraft, leavesByWhen: Leaf[][], now: Date = 
     else salience = parsed
   }
 
-  const seenBindings = new Set<string>()
-  const when: WhenBlock[] = []
-  draft.whens.forEach((block, index) => {
-    const built = serializeWhen(block, leavesByWhen[index] ?? [], index, errors)
-    if (!built) return
-    if (seenBindings.has(built.binding)) errors.push(`When block ${index + 1}: ${built.binding} is already used.`)
-    seenBindings.add(built.binding)
-    when.push(built)
-  })
-
+  const description = draft.description.trim()
+  const when = serializeWhens(draft.whens, leavesByWhen, errors, false)
   const then: ThenBlock[] = []
   draft.thens.forEach((block, index) => {
     const built = serializeThen(block, index, draft.whens, leavesByWhen, errors)
     if (built) then.push(built)
   })
+  if (when.length !== draft.whens.length || then.length !== draft.thens.length) return null
+  return { description, salience, when, then }
+}
 
-  if (errors.length > 0 || when.length !== draft.whens.length || then.length !== draft.thens.length) {
-    return { body: null, errors }
-  }
+function serializeWhens(whens: WhenDraft[], leavesByWhen: Leaf[][], errors: string[], allowBlank: boolean): WhenBlock[] {
+  const seen = new Set<string>()
+  const when: WhenBlock[] = []
+  whens.forEach((block, index) => {
+    const built = serializeWhen(block, leavesByWhen[index] ?? [], index, errors, allowBlank)
+    if (!built) return
+    const label = allowBlank ? `Fact ${index + 1}` : `When block ${index + 1}`
+    if (seen.has(built.binding)) {
+      errors.push(allowBlank ? `${label} uses the same name as an earlier fact.` : `${label}: ${built.binding} is already used.`)
+    }
+    seen.add(built.binding)
+    when.push(built)
+  })
+  return when
+}
 
-  const first = builtPeriods[0]
-  if (!first) return { body: null, errors }
-  const body: Record<string, unknown> = {
-    code,
-    name,
-    effectiveFrom: first.effectiveFrom,
-    effectiveUntil: first.effectiveUntil,
-  }
-  if (builtPeriods.length > 1) body.segments = builtPeriods
-  const description = draft.description.trim()
-  if (description) body.description = description
-  if (salience !== undefined) body.salience = salience
-  body.when = when
-  body.then = then
-  return { body, errors }
+function logicBody(identity: { code: string; name: string }, parts: LogicParts): Record<string, unknown> {
+  const body: Record<string, unknown> = { code: identity.code, name: identity.name }
+  if (parts.description) body.description = parts.description
+  if (parts.salience !== undefined) body.salience = parts.salience
+  body.when = parts.when
+  body.then = parts.then
+  return body
 }
 
 export function draftFromVersion(
@@ -644,8 +1054,37 @@ function conditionFrom(condition: Condition | null | undefined): ConditionDraft 
   }
 }
 
+function branchFromStored(branch: Branch, binding: string): BranchDraft {
+  return {
+    id: uid(),
+    ifArm: armFromStored(branch.if, binding, true),
+    elseIf: (branch.elseIf ?? []).map((arm) => armFromStored(arm, binding, true)),
+    otherwise: branch.else ? armFromStored(branch.else, binding, false) : null,
+  }
+}
+
+function armFromStored(arm: BranchArm | null | undefined, binding: string, withWhen: boolean): ArmDraft {
+  const assignments = assignmentsFrom(arm?.assignments)
+  return {
+    id: uid(),
+    ...(withWhen ? { when: localizeCondition(conditionFrom(arm?.when), binding) } : {}),
+    assignments: assignments.length > 0 ? assignments : [emptyAssignment()],
+  }
+}
+
 function thenFromBlock(block: ThenBlock): ThenDraft {
-  const assignments = (block.assignments ?? []).map((assignment) => {
+  const assignments = assignmentsFrom(block.assignments)
+  const branches = (block.branches ?? []).filter((branch): branch is Branch => branch != null).map((branch) => branchFromStored(branch, block.binding))
+  return {
+    id: uid(),
+    binding: block.binding,
+    assignments: assignments.length > 0 ? assignments : branches.length > 0 ? [] : [emptyAssignment()],
+    branches,
+  }
+}
+
+function assignmentsFrom(assignments: Assignment[] | null | undefined): AssignmentDraft[] {
+  return (assignments ?? []).map((assignment) => {
     if (assignment.expression) {
       return { ...emptyAssignment(), field: assignment.field, mode: "expression" as const, expression: assignment.expression }
     }
@@ -659,10 +1098,17 @@ function thenFromBlock(block: ThenBlock): ThenDraft {
       valueNull: literal.valueNull,
     }
   })
+}
+
+function localizeCondition(node: ConditionDraft, binding: string): ConditionDraft {
+  if (node.kind === "group") {
+    return { ...node, children: node.children.map((child) => localizeCondition(child, binding)) }
+  }
+  const prefix = `${binding}.`
   return {
-    id: uid(),
-    binding: block.binding,
-    assignments: assignments.length > 0 ? assignments : [emptyAssignment()],
+    ...node,
+    field: node.field.startsWith(prefix) ? node.field.slice(prefix.length) : node.field,
+    valueField: node.rhs === "field" && node.valueField.startsWith(prefix) ? node.valueField.slice(prefix.length) : node.valueField,
   }
 }
 
@@ -674,17 +1120,28 @@ function literalDraft(value: unknown): { valueText: string; valueBool: boolean; 
   return { valueText: "", valueBool: false, valueNull: false }
 }
 
-function serializeWhen(block: WhenDraft, leaves: Leaf[], index: number, errors: string[]): WhenBlock | null {
-  const label = `When block ${index + 1}`
+function serializeWhen(block: WhenDraft, leaves: Leaf[], index: number, errors: string[], allowBlank = false): WhenBlock | null {
+  const label = allowBlank ? `Fact ${index + 1}` : `When block ${index + 1}`
   const binding = block.binding.trim()
-  if (!/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(binding)) errors.push(`${label}: binding must look like $customer.`)
+  const bindingOk = /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(binding)
+  if (!bindingOk) errors.push(`${label}: binding must look like $customer.`)
   if (!block.type) errors.push(`${label}: choose a type.`)
+  if (allowBlank && isBlankCondition(block.root)) {
+    if (!bindingOk || !block.type) return null
+    return { binding, type: block.type }
+  }
   const conditions = serializeCondition(block.root, leaves, label, errors)
-  if (!binding || !block.type || !conditions) return null
+  if (!bindingOk || !block.type || !conditions) return null
   return { binding, type: block.type, conditions }
 }
 
-function serializeCondition(node: ConditionDraft, leaves: Leaf[], label: string, errors: string[]): Condition | null {
+function serializeCondition(
+  node: ConditionDraft,
+  leaves: Leaf[],
+  label: string,
+  errors: string[],
+  ownerBinding?: string,
+): Condition | null {
   if (node.kind === "group") {
     if (node.children.length < 2) {
       errors.push(`${label}: ${node.operator} needs at least two conditions.`)
@@ -692,7 +1149,7 @@ function serializeCondition(node: ConditionDraft, leaves: Leaf[], label: string,
     }
     const children: Condition[] = []
     node.children.forEach((child, index) => {
-      const built = serializeCondition(child, leaves, `${label}, condition ${index + 1}`, errors)
+      const built = serializeCondition(child, leaves, `${label}, condition ${index + 1}`, errors, ownerBinding)
       if (built) children.push(built)
     })
     if (children.length !== node.children.length) return null
@@ -713,11 +1170,23 @@ function serializeCondition(node: ConditionDraft, leaves: Leaf[], label: string,
       errors.push(`${label}: choose a field to compare with.`)
       return null
     }
-    return { field: node.field, operator: node.operator, valueField: node.valueField.trim() }
+    const valueField = ownerBinding ? qualifyValueField(node.field, node.valueField, ownerBinding) : node.valueField.trim()
+    return { field: node.field, operator: node.operator, valueField }
   }
   const literal = literalValue(leaf.type, node.valueText, node.valueBool, node.valueNull, label, node.field, errors)
   if (literal === NOT_READY) return null
   return { field: node.field, operator: node.operator, value: literal }
+}
+
+/** A local valueField names the then fact. When the left field belongs to another fact, say so explicitly. */
+function qualifyValueField(left: string, valueField: string, thenBinding: string): string {
+  const trimmed = valueField.trim()
+  if (!trimmed || trimmed.startsWith("$") || !thenBinding) return trimmed
+  const leftTrim = left.trim()
+  const dot = leftTrim.indexOf(".")
+  const leftOwner = leftTrim.startsWith("$") && dot > 0 ? leftTrim.slice(0, dot) : thenBinding
+  if (leftOwner === thenBinding) return trimmed
+  return `${thenBinding}.${trimmed}`
 }
 
 function serializeThen(
@@ -726,15 +1195,18 @@ function serializeThen(
   whens: WhenDraft[],
   leavesByWhen: Leaf[][],
   errors: string[],
+  label = `Then block ${index + 1}`,
 ): ThenBlock | null {
-  const label = `Then block ${index + 1}`
   const binding = block.binding.trim()
   const whenIndex = whens.findIndex((when) => when.binding.trim() === binding)
   if (whenIndex < 0) {
     errors.push(`${label}: choose a when binding.`)
     return null
   }
-  if (block.assignments.length === 0) {
+  const branchDrafts = block.branches ?? []
+  const dropBlank = branchDrafts.length > 0 && block.assignments.length > 0 && block.assignments.every(isUntouchedAssignment)
+  const assignmentDrafts = dropBlank ? [] : block.assignments
+  if (assignmentDrafts.length === 0 && branchDrafts.length === 0) {
     errors.push(`${label}: add an assignment.`)
     return null
   }
@@ -742,7 +1214,7 @@ function serializeThen(
   const assignments: Assignment[] = []
   const seen = new Set<string>()
   let complete = true
-  block.assignments.forEach((assignment, assignmentIndex) => {
+  assignmentDrafts.forEach((assignment, assignmentIndex) => {
     const built = serializeAssignment(assignment, leaves, `${label}, assignment ${assignmentIndex + 1}`, errors)
     if (!built) {
       complete = false
@@ -752,8 +1224,108 @@ function serializeThen(
     seen.add(built.field)
     assignments.push(built)
   })
-  if (!complete || assignments.length !== block.assignments.length) return null
-  return { binding, assignments }
+  if (!complete || assignments.length !== assignmentDrafts.length) return null
+
+  const conditionLeaves = chainLeaves(binding, whens, leavesByWhen)
+  const branches: Branch[] = []
+  let branchesComplete = true
+  branchDrafts.forEach((branch, branchIndex) => {
+    const built = serializeChain(branch, label, branchIndex, binding, conditionLeaves, leaves, errors)
+    if (!built) {
+      branchesComplete = false
+      return
+    }
+    branches.push(built)
+  })
+  if (!branchesComplete) return null
+  const built: ThenBlock = { binding, assignments }
+  if (branches.length > 0) built.branches = branches
+  return built
+}
+
+function isUntouchedAssignment(assignment: AssignmentDraft): boolean {
+  return (
+    assignment.field.trim() === "" &&
+    assignment.expression.trim() === "" &&
+    assignment.valueText.trim() === "" &&
+    !assignment.valueBool &&
+    !assignment.valueNull
+  )
+}
+
+function serializeChain(
+  branch: BranchDraft,
+  thenLabel: string,
+  index: number,
+  binding: string,
+  conditionLeaves: Leaf[],
+  assignmentLeaves: Leaf[],
+  errors: string[],
+): Branch | null {
+  const label = `${thenLabel}, branch ${index + 1}`
+  const ifArm = serializeArm(branch.ifArm, `${label}, if`, binding, conditionLeaves, assignmentLeaves, true, errors)
+  const elseIf: BranchArm[] = []
+  let complete = ifArm !== null
+  branch.elseIf.forEach((arm, armIndex) => {
+    const built = serializeArm(arm, `${label}, else if ${armIndex + 1}`, binding, conditionLeaves, assignmentLeaves, true, errors)
+    if (!built) {
+      complete = false
+      return
+    }
+    elseIf.push(built)
+  })
+  let otherwise: BranchArm | null = null
+  if (branch.otherwise) {
+    otherwise = serializeArm(branch.otherwise, `${label}, else`, binding, conditionLeaves, assignmentLeaves, false, errors)
+    if (!otherwise) complete = false
+  }
+  if (!complete || !ifArm) return null
+  const built: Branch = { if: ifArm }
+  if (elseIf.length > 0) built.elseIf = elseIf
+  if (otherwise) built.else = otherwise
+  return built
+}
+
+function serializeArm(
+  arm: ArmDraft,
+  label: string,
+  binding: string,
+  conditionLeaves: Leaf[],
+  assignmentLeaves: Leaf[],
+  requireWhen: boolean,
+  errors: string[],
+): BranchArm | null {
+  let when: Condition | undefined
+  if (requireWhen) {
+    if (!arm.when) {
+      errors.push(`${label}: add a condition.`)
+      return null
+    }
+    const built = serializeCondition(arm.when, conditionLeaves, label, errors, binding)
+    if (!built) return null
+    when = built
+  }
+  if (arm.assignments.length === 0) {
+    errors.push(`${label}: add an assignment.`)
+    return null
+  }
+  const assignments: Assignment[] = []
+  const seen = new Set<string>()
+  let complete = true
+  arm.assignments.forEach((assignment, assignmentIndex) => {
+    const built = serializeAssignment(assignment, assignmentLeaves, `${label}, assignment ${assignmentIndex + 1}`, errors)
+    if (!built) {
+      complete = false
+      return
+    }
+    if (seen.has(built.field)) errors.push(`${label}: ${built.field} is assigned more than once.`)
+    seen.add(built.field)
+    assignments.push(built)
+  })
+  if (!complete || assignments.length !== arm.assignments.length) return null
+  const result: BranchArm = { assignments }
+  if (when) result.when = when
+  return result
 }
 
 const NOT_READY = Symbol("not-ready")

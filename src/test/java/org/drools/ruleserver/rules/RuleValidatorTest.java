@@ -30,6 +30,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.TextNode;
 
+import org.drools.ruleserver.model.Branch;
+import org.drools.ruleserver.model.BranchArm;
 import org.drools.ruleserver.model.Condition;
 import org.drools.ruleserver.model.ExecuteRequest;
 import org.drools.ruleserver.model.FactDeclaration;
@@ -305,6 +307,118 @@ class RuleValidatorTest {
                 .anyMatch(error -> error.contains("salary is not a field of Customer"));
         assertThat(validator.validateExecution(declared, execution("address", TextNode.valueOf("London"))))
                 .anyMatch(error -> error.contains("address must be a JSON object"));
+    }
+
+    @Test
+    void aThenBlockNeedsAnAssignmentOrABranch() throws Exception {
+        Map<String, FactDeclaration> types = catalog();
+        List<WhenBlock> facts = List.of(new WhenBlock("$customer", "Customer", null));
+        Branch senior = new Branch(
+                new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(65)),
+                        List.of(textAssignment("segment", "SENIOR"))),
+                List.of(new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(40)),
+                        List.of(textAssignment("segment", "ADULT")))),
+                new BranchArm(null, List.of(textAssignment("segment", "YOUNG"))));
+        RuleDefinition branched = new RuleDefinition(
+                "tiered", "Tiered", null, null, null, null, facts,
+                List.of(new ThenBlock("$customer", List.of(), List.of(senior))));
+
+        assertThat(validator.validateForAuthoring(normalizer.normalize(branched), types)).isEmpty();
+
+        RuleDefinition neither = new RuleDefinition(
+                "tiered", "Tiered", null, null, null, null, facts, List.of());
+        assertThat(validator.validateForAuthoring(neither, types))
+                .anyMatch(error -> error.contains("then must contain at least one block"));
+
+        RuleDefinition missingIf = new RuleDefinition(
+                "tiered", "Tiered", null, null, null, null, facts,
+                List.of(new ThenBlock("$customer", null, List.of(new Branch(null, null,
+                        new BranchArm(null, List.of(textAssignment("segment", "YOUNG"))))))));
+        assertThat(validator.validateForAuthoring(missingIf, types))
+                .anyMatch(error -> error.contains("then[0].branches[0].if is required"));
+
+        RuleDefinition elseCondition = new RuleDefinition(
+                "tiered", "Tiered", null, null, null, null, facts,
+                List.of(new ThenBlock("$customer", null, List.of(new Branch(
+                        new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(65)),
+                                List.of(textAssignment("segment", "SENIOR"))),
+                        null,
+                        new BranchArm(Condition.comparison("age", "<", mapper.getNodeFactory().numberNode(65)),
+                                List.of(textAssignment("segment", "YOUNG"))))))));
+        assertThat(validator.validateForAuthoring(elseCondition, types))
+                .anyMatch(error -> error.contains("then[0].branches[0].else.when is not allowed on else"));
+    }
+
+    @Test
+    void aBranchFieldIsLocalToItsThenFact() throws Exception {
+        Map<String, FactDeclaration> types = catalog();
+        TypeDefinition order = mapper.readValue(Files.readString(Path.of("examples/create-order-type.json")), TypeDefinition.class);
+        types.put(order.name(), new FactDeclaration(order.name(), order.fields()));
+        List<WhenBlock> facts = List.of(
+                new WhenBlock("$customer", "Customer", null),
+                new WhenBlock("$order", "Order", null));
+        RuleDefinition wrongFact = new RuleDefinition(
+                "tiered", "Tiered", null, null, null, null, facts,
+                List.of(new ThenBlock("$order", null, List.of(new Branch(
+                        new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(18)),
+                                List.of(textAssignment("priority", "HIGH"))),
+                        null,
+                        null)))));
+
+        assertThat(validator.validateForAuthoring(wrongFact, types))
+                .anyMatch(error -> error.contains("age is not a field of Order"));
+
+        RuleDefinition named = new RuleDefinition(
+                "tiered", "Tiered", null, null, null, null, facts,
+                List.of(
+                        new ThenBlock("$customer", null, List.of(new Branch(
+                                new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(65)),
+                                        List.of(textAssignment("segment", "SENIOR"))),
+                                null,
+                                null))),
+                        new ThenBlock("$order", null, List.of(new Branch(
+                                new BranchArm(Condition.comparison("$customer.age", ">", mapper.getNodeFactory().numberNode(18)),
+                                        List.of(textAssignment("priority", "HIGH"))),
+                                null,
+                                null)))));
+        assertThat(validator.validateForAuthoring(named, types)).isEmpty();
+    }
+
+    @Test
+    void theSameFieldMayBeSetOnDifferentArmsButNotTwiceOnOne() throws Exception {
+        Map<String, FactDeclaration> types = catalog();
+        List<WhenBlock> facts = List.of(new WhenBlock("$customer", "Customer", null));
+        RuleDefinition across = new RuleDefinition(
+                "tiered", "Tiered", null, null, null, null, facts,
+                List.of(new ThenBlock("$customer", null, List.of(
+                        new Branch(
+                                new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(65)),
+                                        List.of(textAssignment("segment", "SENIOR"))),
+                                null,
+                                new BranchArm(null, List.of(textAssignment("segment", "ADULT")))),
+                        new Branch(
+                                new BranchArm(Condition.comparison("name", "==", mapper.getNodeFactory().textNode("Ada")),
+                                        List.of(textAssignment("segment", "NAMED"))),
+                                null,
+                                null)))));
+        assertThat(validator.validateForAuthoring(across, types)).isEmpty();
+
+        RuleDefinition twice = new RuleDefinition(
+                "tiered", "Tiered", null, null, null, null, facts,
+                List.of(new ThenBlock("$customer", null, List.of(new Branch(
+                        new BranchArm(Condition.comparison("age", ">=", mapper.getNodeFactory().numberNode(65)),
+                                List.of(textAssignment("segment", "SENIOR"), textAssignment("segment", "GOLD"))),
+                        null,
+                        null)))));
+        assertThat(validator.validateForAuthoring(twice, types))
+                .anyMatch(error -> error.contains("segment is assigned more than once"));
+    }
+
+    private FieldAssignment textAssignment(String field, String value) {
+        FieldAssignment assignment = new FieldAssignment();
+        assignment.setField(field);
+        assignment.setValue(mapper.getNodeFactory().textNode(value));
+        return assignment;
     }
 
     private Condition numberComparison(String field, String operator, int value) {

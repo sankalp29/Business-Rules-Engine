@@ -20,5 +20,19 @@ package org.drools.ruleserver.model;
 
 import java.util.List;
 
-public record ThenBlock(String binding, List<FieldAssignment> assignments) {
+import com.fasterxml.jackson.annotation.JsonInclude;
+
+/**
+ * Actions for one fact after the rule's when matches. {@code assignments} run whenever the when
+ * matches. {@code branches} are if / else-if / else chains on this same fact. A block needs at
+ * least one assignment or one branch.
+ */
+public record ThenBlock(
+        String binding,
+        List<FieldAssignment> assignments,
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<Branch> branches) {
+
+    public ThenBlock(String binding, List<FieldAssignment> assignments) {
+        this(binding, assignments, null);
+    }
 }

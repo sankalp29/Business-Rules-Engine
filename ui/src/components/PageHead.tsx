@@ -18,7 +18,7 @@ export function PageHead({
       <div className="page-head-copy">
         <p className="eyebrow">{eyebrow}</p>
         <h1>{title}</h1>
-        <p className="lede">{lede}</p>
+        {lede ? <p className="lede">{lede}</p> : null}
       </div>
       {action ? <div className="page-head-action">{action}</div> : null}
     </header>

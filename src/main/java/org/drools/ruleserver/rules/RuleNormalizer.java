@@ -21,6 +21,8 @@ package org.drools.ruleserver.rules;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.drools.ruleserver.model.Branch;
+import org.drools.ruleserver.model.BranchArm;
 import org.drools.ruleserver.model.Condition;
 import org.drools.ruleserver.model.FieldAssignment;
 import org.drools.ruleserver.model.RuleDefinition;
@@ -45,6 +47,42 @@ public class RuleNormalizer {
                 null,
                 normalizeWhen(input.when()),
                 normalizeThen(input.then()));
+    }
+
+    private static List<Branch> normalizeBranches(List<Branch> branches) {
+        if (branches == null || branches.isEmpty()) {
+            return null;
+        }
+        List<Branch> normalized = new ArrayList<>();
+        for (Branch branch : branches) {
+            if (branch == null) {
+                normalized.add(null);
+                continue;
+            }
+            normalized.add(new Branch(
+                    normalizeArm(branch.ifArm()),
+                    normalizeArms(branch.elseIf()),
+                    normalizeArm(branch.otherwise())));
+        }
+        return normalized;
+    }
+
+    private static List<BranchArm> normalizeArms(List<BranchArm> arms) {
+        if (arms == null || arms.isEmpty()) {
+            return null;
+        }
+        List<BranchArm> normalized = new ArrayList<>();
+        for (BranchArm arm : arms) {
+            normalized.add(normalizeArm(arm));
+        }
+        return normalized;
+    }
+
+    private static BranchArm normalizeArm(BranchArm arm) {
+        if (arm == null) {
+            return null;
+        }
+        return new BranchArm(normalizeCondition(arm.when()), normalizeAssignments(arm.assignments()));
     }
 
     private static List<WhenBlock> normalizeWhen(List<WhenBlock> blocks) {
@@ -98,7 +136,10 @@ public class RuleNormalizer {
                 normalized.add(null);
                 continue;
             }
-            normalized.add(new ThenBlock(trimToNull(block.binding()), normalizeAssignments(block.assignments())));
+            normalized.add(new ThenBlock(
+                    trimToNull(block.binding()),
+                    normalizeAssignments(block.assignments()),
+                    normalizeBranches(block.branches())));
         }
         return normalized;
     }

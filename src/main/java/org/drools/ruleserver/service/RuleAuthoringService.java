@@ -32,6 +32,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.drools.ruleserver.ApiRequestException;
+import org.drools.ruleserver.model.DecisionRequest;
 import org.drools.ruleserver.model.EffectiveDates;
 import org.drools.ruleserver.model.EffectiveSegment;
 import org.drools.ruleserver.model.EffectiveSegmentRequest;
@@ -41,6 +42,7 @@ import org.drools.ruleserver.model.RuleDefinition;
 import org.drools.ruleserver.model.RuleResponse;
 import org.drools.ruleserver.model.RuleSubmission;
 import org.drools.ruleserver.model.RuleVersionResponse;
+import org.drools.ruleserver.rules.ApprovalStages;
 import org.drools.ruleserver.persistence.AuthoredRule;
 import org.drools.ruleserver.persistence.AuthoredRuleRepository;
 import org.drools.ruleserver.persistence.RuleVersion;
@@ -49,6 +51,7 @@ import org.drools.ruleserver.rules.DrlGenerator;
 import org.drools.ruleserver.rules.EffectiveSchedule;
 import org.drools.ruleserver.rules.EffectiveWindow;
 import org.drools.ruleserver.rules.KieBaseCache;
+import org.drools.ruleserver.rules.LegacyBranches;
 import org.drools.ruleserver.rules.RuleNormalizer;
 import org.drools.ruleserver.rules.RuleSchemas;
 import org.drools.ruleserver.rules.RuleValidator;
@@ -74,6 +77,7 @@ public class RuleAuthoringService {
     private final KieBaseCache cache;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final ApprovalService approvalService;
 
     public RuleAuthoringService(AuthoredRuleRepository repository,
                                 RuleVersionRepository versionRepository,
@@ -84,7 +88,8 @@ public class RuleAuthoringService {
                                 DrlGenerator generator,
                                 KieBaseCache cache,
                                 ObjectMapper objectMapper,
-                                Clock clock) {
+                                Clock clock,
+                                ApprovalService approvalService) {
         this.repository = repository;
         this.versionRepository = versionRepository;
         this.typeService = typeService;
@@ -95,6 +100,7 @@ public class RuleAuthoringService {
         this.cache = cache;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.approvalService = approvalService;
     }
 
     @Transactional
@@ -161,10 +167,81 @@ public class RuleAuthoringService {
             rule.setDefinition(prepared.json());
             rule.setDrl(prepared.drl());
             repository.saveAndFlush(rule);
-            return toVersionResponse(filled(saved, prepared.stored()), clock.instant());
+            return render(filled(saved, prepared.stored()));
         } catch (DataIntegrityViolationException ex) {
             throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid rule",
                     List.of("that version could not be saved because it conflicts with another save"));
+        }
+    }
+
+    /**
+     * Replaces the description, salience, when, and then of one version. Dates stay on
+     * {@link #changeDates}. Both are refused unless the version is in draft.
+     */
+    @Transactional
+    public RuleVersionResponse updateVersion(String key, String token, RuleSubmission request) {
+        AuthoredRule rule = require(key);
+        FilledVersion current = requireVersion(rule, token);
+        requireDraft(current);
+        rejectIdentityChange(rule, request);
+        RuleSubmission body = request == null
+                ? new RuleSubmission(null, null, null, null, null, null, null, null, null, null, null)
+                : request;
+        RuleDefinition definition = normalizer.normalize(new RuleDefinition(
+                codeForValidation(rule),
+                rule.getName(),
+                body.description(),
+                body.salience(),
+                null,
+                null,
+                body.when(),
+                body.then()));
+        Map<String, FactDeclaration> catalog = typeService.catalog();
+        List<String> errors = new ArrayList<>(validator.validateForAuthoring(definition, catalog));
+        if (!errors.isEmpty()) {
+            throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid rule", errors);
+        }
+        Prepared prepared = compile(new Checked(definition, current.schedule(), catalog, List.of()));
+        RuleVersion entity = entityOf(rule, current);
+        entity.setDescription(prepared.stored().description());
+        entity.setDefinition(prepared.json());
+        entity.setDrl(prepared.drl());
+        try {
+            RuleVersion saved = versionRepository.saveAndFlush(entity);
+            if (current.number() == maxNumber(load(rule))) {
+                rule.setDescription(prepared.stored().description());
+                rule.setDefinition(prepared.json());
+                rule.setDrl(prepared.drl());
+                repository.saveAndFlush(rule);
+            }
+            return render(filled(saved, prepared.stored()));
+        } catch (DataIntegrityViolationException ex) {
+            throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid rule",
+                    List.of("that version could not be saved because it conflicts with another save"));
+        }
+    }
+
+    /**
+     * Approve advances one stage on the path this version was created with. Reject, with a
+     * comment, returns a version that is not yet approved to draft. Approved is the last stage,
+     * so it cannot advance or be sent back. A version stored before approval counts as approved
+     * for execution and can still be sent back to draft so its dates can be set.
+     */
+    @Transactional
+    public RuleVersionResponse decide(String key, String token, DecisionRequest request) {
+        AuthoredRule rule = require(key);
+        FilledVersion current = requireVersion(rule, token);
+        RuleVersion entity = entityOf(rule, current);
+        if (entity.getId() == null) {
+            entity = versionRepository.saveAndFlush(entity);
+        }
+        approvalService.decide(entity, request);
+        try {
+            RuleVersion saved = versionRepository.saveAndFlush(entity);
+            return render(filled(saved, current.definition()));
+        } catch (DataIntegrityViolationException ex) {
+            throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid decision",
+                    List.of("that decision could not be saved because it conflicts with another save"));
         }
     }
 
@@ -199,9 +276,11 @@ public class RuleAuthoringService {
     public List<RuleVersionResponse> listVersions(String key) {
         AuthoredRule rule = require(key);
         Instant now = clock.instant();
+        List<FilledVersion> loaded = load(rule);
+        Map<Long, ApprovalService.WorkflowSnapshot> workflows = snapshots(loaded);
         List<RuleVersionResponse> versions = new ArrayList<>();
-        for (FilledVersion version : load(rule)) {
-            versions.add(toVersionResponse(version, now));
+        for (FilledVersion version : loaded) {
+            versions.add(toVersionResponse(version, now, workflows));
         }
         return versions;
     }
@@ -209,15 +288,16 @@ public class RuleAuthoringService {
     @Transactional(readOnly = true)
     public RuleVersionResponse getVersion(String key, String token) {
         AuthoredRule rule = require(key);
-        FilledVersion version = requireVersion(rule, token);
-        return toVersionResponse(version, clock.instant());
+        return render(requireVersion(rule, token));
     }
 
     /**
      * Replaces the effective segments of one version. A start or end that is already before the
      * current minute stays as it is. A new bound is a whole minute and is not before the current
-     * minute. A segment that sits strictly inside another version splits that version, so the
-     * earlier version runs again after this segment ends. Any other overlap is rejected.
+     * minute. When the new dates overlap another version, that version loses the shared minutes.
+     * A period strictly inside it splits it, so it runs again afterwards. A partial overlap
+     * shortens or shifts it. A change that would erase the other version, or move a minute that
+     * is already before the current minute, is rejected.
      */
     @Transactional
     public RuleVersionResponse changeDates(String key, String token, EffectiveDates request) {
@@ -238,6 +318,7 @@ public class RuleAuthoringService {
             throw new ApiRequestException(HttpStatus.NOT_FOUND, "Rule version not found",
                     List.of("No version " + VersionLabels.of(number) + " exists for rule " + ruleLabel(rule)));
         }
+        requireDraft(current);
         Instant now = clock.instant();
         EffectiveSchedule.Proposal proposal = EffectiveSchedule.propose(
                 rawSegments(request == null ? null : request.effectiveFrom(),
@@ -268,22 +349,11 @@ public class RuleAuthoringService {
             applySchedule(rewritten, rewrite.schedule());
             versionRepository.saveAndFlush(rewritten);
         }
-        RuleVersion entity = current.id() == null
-                ? null
-                : versionRepository.findByRule_IdAndVersionNumber(rule.getId(), current.number()).orElse(null);
-        if (entity == null) {
-            entity = new RuleVersion();
-            entity.setRule(rule);
-            entity.setVersionNumber(current.number());
-            entity.setDescription(current.description());
-            entity.setDefinition(rule.getDefinition());
-            entity.setDrl(rule.getDrl());
-            entity.setCreatedAt(current.createdAt() == null ? now : current.createdAt());
-        }
+        RuleVersion entity = entityOf(rule, current);
         applySchedule(entity, proposed);
         try {
             RuleVersion saved = versionRepository.saveAndFlush(entity);
-            return toVersionResponse(filled(saved, current.definition()), now);
+            return render(filled(saved, current.definition()));
         } catch (DataIntegrityViolationException ex) {
             throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid rule",
                     List.of("that version could not be saved because it conflicts with another save"));
@@ -291,28 +361,43 @@ public class RuleAuthoringService {
     }
 
     /**
-     * The version whose effective dates contain the current timestamp.
+     * The approved version whose effective dates contain the current timestamp. A version still
+     * in draft or in a middle stage does not run, even when its dates include this minute.
+     * A version stored before approval existed counts as approved.
      */
     @Transactional(readOnly = true)
     public ExecutionTarget activeTarget(String key) {
         AuthoredRule rule = require(key);
         List<FilledVersion> versions = load(rule);
         Instant now = clock.instant();
-        List<FilledVersion> active = new ArrayList<>();
+        List<FilledVersion> inWindow = new ArrayList<>();
         for (FilledVersion version : versions) {
             if (version.schedule().contains(now)) {
-                active.add(version);
+                inWindow.add(version);
             }
         }
-        if (active.isEmpty()) {
+        List<FilledVersion> approved = new ArrayList<>();
+        for (FilledVersion version : inWindow) {
+            if (ApprovalStages.isApproved(version.stage())) {
+                approved.add(version);
+            }
+        }
+        if (approved.isEmpty()) {
+            if (!inWindow.isEmpty()) {
+                List<String> details = new ArrayList<>();
+                for (FilledVersion version : inWindow) {
+                    details.add(notApproved(rule, version));
+                }
+                throw new ApiRequestException(HttpStatus.CONFLICT, "Rule version is not approved", details);
+            }
             throw new ApiRequestException(HttpStatus.CONFLICT, "Rule version is not active",
                     List.of(noneActive(rule, now, versions)));
         }
-        if (active.size() > 1) {
+        if (approved.size() > 1) {
             throw new ApiRequestException(HttpStatus.CONFLICT, "Rule version is not active",
-                    List.of(severalActive(rule, now, active)));
+                    List.of(severalActive(rule, now, approved)));
         }
-        return target(rule, active.get(0));
+        return target(rule, approved.get(0));
     }
 
     /**
@@ -360,8 +445,9 @@ public class RuleAuthoringService {
     }
 
     /**
-     * A new segment that sits strictly inside another version's segment splits that segment, so
-     * the earlier version runs again after the new one ends. Any other overlap is rejected.
+     * Gives the incoming minutes to this version. Each other version loses the minutes it shared,
+     * including a split that lets it resume afterwards and a partial overlap that shortens or
+     * shifts it. A cut that would change a minute already before the current minute is rejected.
      */
     private static Split splitAround(EffectiveSchedule incoming, List<FilledVersion> existing, Instant now) {
         List<String> errors = new ArrayList<>();
@@ -372,7 +458,7 @@ public class RuleAuthoringService {
             }
             EffectiveSchedule.Carve carve = EffectiveSchedule.carve(other.schedule(), incoming, now);
             if (carve.error() != null) {
-                errors.add(VersionLabels.of(other.number()) + " cannot be split around this version because " + carve.error());
+                errors.add(VersionLabels.of(other.number()) + " cannot be adjusted around this version because " + carve.error());
                 continue;
             }
             if (carve.schedule().overlaps(incoming)) {
@@ -435,13 +521,19 @@ public class RuleAuthoringService {
             throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid rule",
                     List.of("effective dates overlap v1 (" + legacy.schedule().describe() + ")"));
         }
-        RuleVersion closed = new RuleVersion();
-        closed.setRule(rule);
-        closed.setVersionNumber(1);
-        closed.setDescription(rule.getDescription());
-        closed.setDefinition(rule.getDefinition());
-        closed.setDrl(rule.getDrl());
-        closed.setCreatedAt(rule.getCreatedAt() == null ? clock.instant() : rule.getCreatedAt());
+        RuleVersion closed = legacy.id() == null
+                ? null
+                : versionRepository.findByRule_IdAndVersionNumber(rule.getId(), legacy.number()).orElse(null);
+        if (closed == null) {
+            closed = new RuleVersion();
+            closed.setRule(rule);
+            closed.setVersionNumber(legacy.number());
+            closed.setDescription(rule.getDescription());
+            closed.setDefinition(rule.getDefinition());
+            closed.setDrl(rule.getDrl());
+            closed.setCreatedAt(rule.getCreatedAt() == null ? clock.instant() : rule.getCreatedAt());
+            approvalService.markApproved(closed);
+        }
         applySchedule(closed, new EffectiveSchedule(List.of(
                 new EffectiveWindow(legacyFrom, start.minus(1, ChronoUnit.MINUTES)))));
         versionRepository.saveAndFlush(closed);
@@ -456,6 +548,7 @@ public class RuleAuthoringService {
         version.setDrl(prepared.drl());
         version.setCreatedAt(clock.instant());
         applySchedule(version, prepared.schedule());
+        approvalService.markDraft(version);
         return versionRepository.saveAndFlush(version);
     }
 
@@ -492,15 +585,21 @@ public class RuleAuthoringService {
         if (!rows.isEmpty()) {
             List<RawVersion> versions = new ArrayList<>(rows.size());
             for (RuleVersion row : rows) {
+                EffectiveSchedule schedule = scheduleOf(row);
                 versions.add(new RawVersion(
                         row.getId(),
                         row.getVersionNumber(),
                         row.getDescription(),
                         readJson(row.getDefinition(), rule.getId()),
                         row.getDrl(),
-                        scheduleOf(row),
+                        schedule,
                         row.getCreatedAt(),
-                        false));
+                        openEnded(schedule),
+                        row.getStage(),
+                        row.getWorkflowId(),
+                        row.getReturnedFromStage(),
+                        row.getReturnedComment(),
+                        row.getReturnedAt()));
             }
             versions.sort(Comparator.comparingInt(RawVersion::number));
             return versions;
@@ -514,7 +613,12 @@ public class RuleAuthoringService {
                     rule.getDrl(),
                     new EffectiveSchedule(List.of(new EffectiveWindow(LEGACY_FROM, null))),
                     rule.getCreatedAt(),
-                    true));
+                    true,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null));
         }
         return List.of();
     }
@@ -530,7 +634,12 @@ public class RuleAuthoringService {
                     version.drl(),
                     version.schedule(),
                     version.createdAt(),
-                    version.legacyOpen()));
+                    version.legacyOpen(),
+                    version.stage(),
+                    version.workflowId(),
+                    version.returnedFromStage(),
+                    version.returnedComment(),
+                    version.returnedAt()));
         }
         return filled;
     }
@@ -553,8 +662,9 @@ public class RuleAuthoringService {
         Instant now = clock.instant();
         List<RuleVersionResponse> rendered = new ArrayList<>(versions.size());
         List<RuleVersionResponse> active = new ArrayList<>();
+        Map<Long, ApprovalService.WorkflowSnapshot> workflows = snapshots(versions);
         for (FilledVersion version : versions) {
-            RuleVersionResponse response = toVersionResponse(version, now);
+            RuleVersionResponse response = toVersionResponse(version, now, workflows);
             rendered.add(response);
             if (response.active()) {
                 active.add(response);
@@ -573,13 +683,27 @@ public class RuleAuthoringService {
                 rendered);
     }
 
-    private RuleVersionResponse toVersionResponse(FilledVersion version, Instant now) {
+    private RuleVersionResponse render(FilledVersion version) {
+        return toVersionResponse(version, clock.instant(), snapshots(List.of(version)));
+    }
+
+    private RuleVersionResponse toVersionResponse(FilledVersion version,
+                                                  Instant now,
+                                                  Map<Long, ApprovalService.WorkflowSnapshot> workflows) {
         List<EffectiveSegment> segments = new ArrayList<>();
         for (EffectiveWindow window : version.schedule().segments()) {
             segments.add(new EffectiveSegment(window.from(), window.until()));
         }
         EffectiveWindow first = version.schedule().segments().get(0);
         EffectiveWindow last = version.schedule().segments().get(version.schedule().segments().size() - 1);
+        ApprovalService.WorkflowSnapshot workflow = version.workflowId() == null ? null : workflows.get(version.workflowId());
+        ApprovalStages.Presentation approval = ApprovalStages.present(
+                version.stage(),
+                workflow == null ? List.of() : workflow.middle(),
+                workflow == null ? null : workflow.version(),
+                version.returnedFromStage(),
+                version.returnedComment(),
+                version.returnedAt());
         return new RuleVersionResponse(
                 version.id(),
                 version.number(),
@@ -591,19 +715,79 @@ public class RuleAuthoringService {
                 version.schedule().contains(now),
                 version.definition(),
                 version.drl(),
-                version.createdAt());
+                version.createdAt(),
+                approval.stage(),
+                approval.stageLabel(),
+                approval.editable(),
+                approval.workflowVersion(),
+                approval.stages(),
+                approval.returnedFrom());
     }
 
     private FilledVersion filled(RuleVersion version, RuleDefinition definition) {
+        EffectiveSchedule schedule = scheduleOf(version);
         return new FilledVersion(
                 version.getId(),
                 version.getVersionNumber(),
                 version.getDescription(),
                 definition,
                 version.getDrl(),
-                scheduleOf(version),
+                schedule,
                 version.getCreatedAt(),
-                false);
+                openEnded(schedule),
+                version.getStage(),
+                version.getWorkflowId(),
+                version.getReturnedFromStage(),
+                version.getReturnedComment(),
+                version.getReturnedAt());
+    }
+
+    private RuleVersion entityOf(AuthoredRule rule, FilledVersion current) {
+        if (current.id() != null) {
+            return versionRepository.findByRule_IdAndVersionNumber(rule.getId(), current.number())
+                    .orElseThrow(() -> new IllegalStateException("Version " + current.number() + " disappeared during save"));
+        }
+        RuleVersion entity = new RuleVersion();
+        entity.setRule(rule);
+        entity.setVersionNumber(current.number());
+        entity.setDescription(current.description());
+        entity.setDefinition(rule.getDefinition());
+        entity.setDrl(rule.getDrl());
+        entity.setCreatedAt(current.createdAt() == null ? clock.instant() : current.createdAt());
+        applySchedule(entity, current.schedule());
+        return entity;
+    }
+
+    private Map<Long, ApprovalService.WorkflowSnapshot> snapshots(List<FilledVersion> versions) {
+        List<Long> ids = new ArrayList<>();
+        for (FilledVersion version : versions) {
+            if (version.workflowId() != null && !ids.contains(version.workflowId())) {
+                ids.add(version.workflowId());
+            }
+        }
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return approvalService.snapshots(ids);
+    }
+
+    private static void requireDraft(FilledVersion version) {
+        if (!ApprovalStages.isDraft(version.stage())) {
+            throw new ApiRequestException(HttpStatus.CONFLICT, "Version is not editable",
+                    List.of("Logic and dates can be changed only while the version is in draft."));
+        }
+    }
+
+    private static int maxNumber(List<FilledVersion> versions) {
+        int max = 0;
+        for (FilledVersion version : versions) {
+            max = Math.max(max, version.number());
+        }
+        return max;
+    }
+
+    private static boolean openEnded(EffectiveSchedule schedule) {
+        return schedule.segments().size() == 1 && schedule.segments().get(0).until() == null;
     }
 
     private EffectiveSchedule scheduleOf(RuleVersion row) {
@@ -629,11 +813,16 @@ public class RuleAuthoringService {
     private void applySchedule(RuleVersion version, EffectiveSchedule schedule) {
         EffectiveWindow first = schedule.segments().get(0);
         EffectiveWindow last = schedule.segments().get(schedule.segments().size() - 1);
-        if (last.until() == null) {
-            throw new IllegalArgumentException("effectiveUntil is required");
-        }
         version.setEffectiveFrom(first.from());
-        version.setEffectiveUntil(last.until());
+        if (last.until() == null) {
+            if (schedule.segments().size() != 1) {
+                throw new IllegalArgumentException("effectiveUntil is required");
+            }
+            // The column is not null. Readers prefer the segments JSON, which keeps the open end.
+            version.setEffectiveUntil(first.from().plus(1, ChronoUnit.MINUTES));
+        } else {
+            version.setEffectiveUntil(last.until());
+        }
         version.setEffectiveSegments(writeSegments(schedule));
     }
 
@@ -708,7 +897,9 @@ public class RuleAuthoringService {
 
     private RuleDefinition readJson(String json, Long ruleId) {
         try {
-            return objectMapper.readValue(json, RuleDefinition.class);
+            // Older documents keep an independent-if array beside when and then. Fold it into
+            // then-block chains so the row can be read. The stored text stays unchanged.
+            return LegacyBranches.read(objectMapper, json);
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Stored rule " + ruleId + " has unreadable JSON", ex);
         }
@@ -724,6 +915,11 @@ public class RuleAuthoringService {
 
     private static String codeForValidation(AuthoredRule rule) {
         return rule.getCode() == null ? "legacy" : rule.getCode();
+    }
+
+    private static String notApproved(AuthoredRule rule, FilledVersion version) {
+        return VersionLabels.of(version.number()) + " of " + ruleLabel(rule) + " is in "
+                + ApprovalStages.label(version.stage()) + " and cannot run until it is approved.";
     }
 
     private static String noneActive(AuthoredRule rule, Instant at, List<FilledVersion> versions) {
@@ -808,7 +1004,12 @@ public class RuleAuthoringService {
             String drl,
             EffectiveSchedule schedule,
             Instant createdAt,
-            boolean legacyOpen) {
+            boolean legacyOpen,
+            String stage,
+            Long workflowId,
+            String returnedFromStage,
+            String returnedComment,
+            Instant returnedAt) {
     }
 
     private record FilledVersion(
@@ -819,6 +1020,11 @@ public class RuleAuthoringService {
             String drl,
             EffectiveSchedule schedule,
             Instant createdAt,
-            boolean legacyOpen) {
+            boolean legacyOpen,
+            String stage,
+            Long workflowId,
+            String returnedFromStage,
+            String returnedComment,
+            Instant returnedAt) {
     }
 }

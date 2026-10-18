@@ -8,7 +8,7 @@ import {
   type GroupDraft,
   type ValueFieldOption,
 } from "../drafts"
-import { isPrimitive, operatorsFor, type Leaf } from "../model"
+import { isPrimitive, leafText, operatorsFor, type Leaf } from "../model"
 import { TypedControl } from "./TypedControl"
 
 export function ConditionEditor({
@@ -165,7 +165,7 @@ function ComparisonEditor({
             <option value="">Choose a field</option>
             {leaves.map((item) => (
               <option key={item.path} value={item.path}>
-                {item.path} · {item.type}
+                {leafText(item)}
               </option>
             ))}
           </select>
@@ -218,7 +218,7 @@ function ComparisonEditor({
           ) : node.valueNull ? null : (
             <TypedControl
               id={valueId}
-              label={leaf.path}
+              label={leaf.label ?? leaf.path}
               typeName={leaf.type}
               text={node.valueText}
               bool={node.valueBool}

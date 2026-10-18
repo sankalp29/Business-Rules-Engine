@@ -30,11 +30,14 @@ import java.util.Map;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import org.drools.ruleserver.model.Branch;
+import org.drools.ruleserver.model.BranchArm;
 import org.drools.ruleserver.model.Condition;
 import org.drools.ruleserver.model.FactDeclaration;
 import org.drools.ruleserver.model.FieldAssignment;
 import org.drools.ruleserver.model.FieldDeclaration;
 import org.drools.ruleserver.model.RuleDefinition;
+import org.drools.ruleserver.model.RuleSubmission;
 import org.drools.ruleserver.model.ThenBlock;
 import org.drools.ruleserver.model.TypeDefinition;
 import org.drools.ruleserver.model.WhenBlock;
@@ -270,6 +273,89 @@ class RuleSchemasTest {
                 .isInstanceOf(JsonProcessingException.class);
     }
 
+    @Test
+    void aMissingBranchesFieldStaysNullAndAPresentOneRoundTrips() throws Exception {
+        RuleDefinition classic = mapper.readValue("""
+                {"when":[{"binding":"$customer","type":"Customer","conditions":{"field":"age","operator":">=","value":65}}],
+                 "then":[{"binding":"$customer","assignments":[{"field":"discount","value":0.2}]}]}
+                """, RuleDefinition.class);
+        assertThat(classic.then().get(0).branches()).isNull();
+        assertThat(mapper.writeValueAsString(classic)).doesNotContain("branches");
+
+        RuleDefinition branched = mapper.readValue("""
+                {"when":[{"binding":"$customer","type":"Customer","conditions":{"field":"age","operator":">","value":18}}],
+                 "then":[{"binding":"$customer","branches":[
+                   {"if":{"when":{"field":"age","operator":">=","value":65},
+                          "assignments":[{"field":"segment","value":"SENIOR"}]},
+                    "elseIf":[{"when":{"field":"segment","operator":"==","value":"GOLD"},
+                               "assignments":[{"field":"discount","value":0.1}]}],
+                    "else":{"assignments":[{"field":"segment","value":"STANDARD"}]}},
+                   {"if":{"when":{"field":"name","operator":"contains","value":"Ada"},
+                          "assignments":[{"field":"discount","value":0.2}]}}
+                 ]}]}
+                """, RuleDefinition.class);
+        assertThat(branched.then().get(0).branches()).hasSize(2);
+        assertThat(branched.then().get(0).branches().get(0).ifArm().when().getField()).isEqualTo("age");
+        assertThat(branched.then().get(0).branches().get(0).elseIf()).hasSize(1);
+        assertThat(branched.then().get(0).branches().get(0).otherwise().when()).isNull();
+        assertThat(branched.then().get(0).branches().get(1).otherwise()).isNull();
+
+        RuleSubmission dated = mapper.readValue("""
+                {"code":"tiered","name":"Tiered","when":[{"binding":"$customer","type":"Customer"}],
+                 "then":[{"binding":"$customer","assignments":[{"field":"segment","value":"BASE"}]}],
+                 "effectiveFrom":"2090-01-01T00:00:00+05:30","effectiveUntil":"2091-01-01T00:00:00+05:30"}
+                """, RuleSubmission.class);
+        assertThat(dated.then().get(0).branches()).isNull();
+        assertThat(dated.effectiveFrom()).isEqualTo("2090-01-01T00:00:00+05:30");
+        assertThat(dated.definition().then().get(0).branches()).isNull();
+
+        RuleSubmission withBranches = mapper.readValue("""
+                {"code":"tiered","name":"Tiered",
+                 "when":[{"binding":"$customer","type":"Customer","conditions":{"field":"age","operator":">","value":18}}],
+                 "then":[{"binding":"$customer","branches":[
+                   {"if":{"when":{"field":"age","operator":">=","value":65},
+                          "assignments":[{"field":"discount","value":0.2}]}}
+                 ]}],
+                 "effectiveFrom":"2090-01-01T00:00:00+05:30","effectiveUntil":"2091-01-01T00:00:00+05:30"}
+                """, RuleSubmission.class);
+        assertThat(withBranches.then().get(0).branches()).hasSize(1);
+        assertThat(withBranches.effectiveUntil()).isEqualTo("2091-01-01T00:00:00+05:30");
+        assertThat(withBranches.definition().then().get(0).branches()).hasSize(1);
+    }
+
+    @Test
+    void branchReadsJoinTheInputSchemaAndBranchWritesJoinTheOutputOnly() {
+        RuleDefinition definition = new RuleDefinition(
+                "tiered",
+                "Tiered",
+                null,
+                null,
+                null,
+                null,
+                List.of(
+                        new WhenBlock("$customer", "Customer",
+                                Condition.comparison("age", ">", mapper.getNodeFactory().numberNode(18))),
+                        new WhenBlock("$order", "Order", null)),
+                List.of(
+                        new ThenBlock("$customer", null, List.of(new Branch(
+                                new BranchArm(Condition.comparison("segment", "==", mapper.getNodeFactory().textNode("GOLD")),
+                                        List.of(assignment("discount", "0.2"))),
+                                null,
+                                new BranchArm(null, List.of(assignment("segment", "STANDARD")))))),
+                        new ThenBlock("$order", null, List.of(new Branch(
+                                new BranchArm(Condition.valueField("total", ">", "$customer.age"),
+                                        List.of(assignment("priority", "HIGH"))),
+                                null,
+                                new BranchArm(null, List.of(assignment("approved", true))))))));
+
+        Schemas schemas = RuleSchemas.build(definition, catalogWithoutFiles());
+
+        assertThat(fieldNames(schemas.input(), "Customer")).containsExactly("age", "segment");
+        assertThat(fieldNames(schemas.output(), "Customer")).containsExactly("age", "discount", "segment");
+        assertThat(fieldNames(schemas.input(), "Order")).containsExactly("total");
+        assertThat(fieldNames(schemas.output(), "Order")).containsExactly("total", "priority", "approved");
+    }
+
     private Map<String, FactDeclaration> catalogWithoutFiles() {
         Map<String, FactDeclaration> types = new LinkedHashMap<>();
         types.put("Address", new FactDeclaration("Address", List.of(
@@ -294,17 +380,17 @@ class RuleSchemasTest {
         return fact.fields().stream().map(FieldDeclaration::name).toList();
     }
 
-    private FieldAssignment assignment(String field, boolean value) {
-        FieldAssignment assignment = new FieldAssignment();
-        assignment.setField(field);
-        assignment.setValue(mapper.getNodeFactory().booleanNode(value));
-        return assignment;
-    }
-
     private FieldAssignment assignment(String field, String value) {
         FieldAssignment assignment = new FieldAssignment();
         assignment.setField(field);
         assignment.setValue(mapper.getNodeFactory().textNode(value));
+        return assignment;
+    }
+
+    private FieldAssignment assignment(String field, boolean value) {
+        FieldAssignment assignment = new FieldAssignment();
+        assignment.setField(field);
+        assignment.setValue(mapper.getNodeFactory().booleanNode(value));
         return assignment;
     }
 

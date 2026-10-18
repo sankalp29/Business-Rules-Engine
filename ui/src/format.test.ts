@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest"
-import { canonicalVersion, findVersion, formatSchedule, formatWindow, istInputValue, istOffset, roundUpMinute } from "./format"
+import {
+  approvalMarks,
+  approvalStageErrors,
+  canonicalVersion,
+  findVersion,
+  formatSchedule,
+  formatWindow,
+  isApprovedStage,
+  isEditable,
+  istInputValue,
+  istOffset,
+  roundUpMinute,
+  runNote,
+  runsNow,
+  stageText,
+  versionSummary,
+} from "./format"
 import type { RuleVersion } from "./model"
 
 function version(token: string, active = false): RuleVersion {
@@ -16,6 +32,66 @@ function version(token: string, active = false): RuleVersion {
     drl: null,
   }
 }
+
+describe("approval", () => {
+  it("treats a missing stage as approved and a draft in the window as not running", () => {
+    expect(isApprovedStage({})).toBe(true)
+    expect(isApprovedStage({ stage: "APPROVED" })).toBe(true)
+    expect(isApprovedStage({ stage: "DRAFT" })).toBe(false)
+    expect(runsNow({ active: true, stage: "DRAFT" })).toBe(false)
+    expect(runsNow({ active: true, stage: null })).toBe(true)
+    expect(runsNow({ active: false, stage: "APPROVED" })).toBe(false)
+    expect(isEditable({})).toBe(true)
+    expect(isEditable({ stage: "DRAFT" })).toBe(true)
+    expect(isEditable({ editable: false, stage: "DRAFT" })).toBe(false)
+    expect(isEditable({ stage: "Checker" })).toBe(false)
+    expect(stageText({ stage: "DRAFT" })).toBe("Draft")
+    expect(stageText({ stageLabel: "Checker" })).toBe("Checker")
+  })
+
+  it("draws only the marks for the latest pass", () => {
+    const latest = [
+      { name: "DRAFT", label: "Draft", status: "current" as const },
+      { name: "Checker", label: "Checker", status: "upcoming" as const },
+      { name: "Sign-off", label: "Sign-off", status: "upcoming" as const },
+      { name: "APPROVED", label: "Approved", status: "upcoming" as const },
+    ]
+    expect(approvalMarks({ stage: "DRAFT", stages: latest })).toEqual(latest)
+    expect(approvalMarks({ stage: "APPROVED" })).toEqual([
+      { name: "DRAFT", label: "Draft", status: "complete" },
+      { name: "APPROVED", label: "Approved", status: "current" },
+    ])
+  })
+
+  it("rejects a blank middle stage and a reserved name", () => {
+    expect(approvalStageErrors(["  ", "Draft"])).toEqual([
+      "Stage 1 needs a name.",
+      "Stage 2 cannot be named Draft or Approved.",
+    ])
+    expect(approvalStageErrors(["Checker", "checker"])).toEqual(["Stage 2 repeats checker."])
+  })
+
+  it("describes a draft in the window as not running", () => {
+    const draft = version("v1", true)
+    draft.stage = "DRAFT"
+    draft.stageLabel = "Draft"
+    const approved = version("v2", false)
+    approved.stage = "APPROVED"
+    approved.stageLabel = "Approved"
+    expect(versionSummary({ versions: [draft, approved] })).toBe(
+      "2 versions · v1 is in Draft and will not run until it is approved",
+    )
+    approved.active = true
+    draft.active = false
+    expect(versionSummary({ versions: [draft, approved] })).toBe("2 versions · v2 running now")
+    expect(runNote({ activeVersion: "v1", versions: [{ ...draft, active: true }, { ...approved, active: false }] })).toContain(
+      "v1 is in Draft and will not run until it is approved",
+    )
+    expect(runNote({ activeVersion: "v2", versions: [{ ...draft, active: false }, { ...approved, active: true }] })).toContain(
+      "uses v2",
+    )
+  })
+})
 
 describe("version tokens", () => {
   it("accepts v2, V2, and 2", () => {

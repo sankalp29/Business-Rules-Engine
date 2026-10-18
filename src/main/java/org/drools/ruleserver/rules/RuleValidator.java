@@ -28,6 +28,8 @@ import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import org.drools.ruleserver.model.Branch;
+import org.drools.ruleserver.model.BranchArm;
 import org.drools.ruleserver.model.ExecuteRequest;
 import org.drools.ruleserver.model.FactDeclaration;
 import org.drools.ruleserver.model.FactInput;
@@ -47,6 +49,7 @@ public class RuleValidator {
     static final int MAX_CONDITIONS = 20;
     static final int MAX_TEXT = 500;
     static final int MAX_THEN = 20;
+    static final int MAX_BRANCHES = 20;
     static final int MAX_ASSIGNMENTS = 50;
     static final int MAX_EXECUTE_FACTS = 100;
     static final int SALIENCE_LIMIT = 1_000_000;
@@ -66,7 +69,11 @@ public class RuleValidator {
         validateSalience(definition.salience(), errors);
         Map<String, FieldNode> nodes = TypeSchemas.fromFacts(new ArrayList<>(catalog.values()));
         Map<String, String> bindings = validateWhen(definition.when(), catalog, nodes, errors);
-        validateThen(definition.then(), nodes, bindings, errors);
+        Map<String, FieldNode> boundNodes = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : bindings.entrySet()) {
+            boundNodes.put(entry.getKey(), nodes.get(entry.getValue()));
+        }
+        validateThen(definition.then(), nodes, bindings, boundNodes, errors);
         return errors;
     }
 
@@ -187,6 +194,7 @@ public class RuleValidator {
     private static void validateThen(List<ThenBlock> blocks,
                                      Map<String, FieldNode> nodes,
                                      Map<String, String> bindings,
+                                     Map<String, FieldNode> boundNodes,
                                      List<String> errors) {
         if (blocks == null || blocks.isEmpty()) {
             errors.add("then must contain at least one block");
@@ -209,17 +217,99 @@ public class RuleValidator {
                 errors.add(path + ".binding must match a when binding");
             }
             FieldNode factNode = type == null ? null : nodes.get(type);
-            if (block.assignments() == null || block.assignments().isEmpty()) {
-                errors.add(path + ".assignments must contain at least one assignment");
+            boolean hasAssignments = block.assignments() != null && !block.assignments().isEmpty();
+            boolean hasBranches = block.branches() != null && !block.branches().isEmpty();
+            if (!hasAssignments && !hasBranches) {
+                errors.add(path + " must contain an assignment or a branch");
+            }
+            if (hasAssignments) {
+                if (block.assignments().size() > MAX_ASSIGNMENTS) {
+                    errors.add(path + ".assignments cannot contain more than " + MAX_ASSIGNMENTS + " items");
+                }
+                int assignmentLimit = Math.min(block.assignments().size(), MAX_ASSIGNMENTS);
+                for (int j = 0; j < assignmentLimit; j++) {
+                    validateAssignment(path + ".assignments[" + j + "]", block.binding(), block.assignments().get(j), factNode, assigned, errors);
+                }
+            }
+            validateBranches(path, block.branches(), block.binding(), factNode, boundNodes, errors);
+        }
+    }
+
+    private static void validateBranches(String blockPath,
+                                         List<Branch> branches,
+                                         String binding,
+                                         FieldNode self,
+                                         Map<String, FieldNode> boundNodes,
+                                         List<String> errors) {
+        if (branches == null || branches.isEmpty()) {
+            return;
+        }
+        String path = blockPath + ".branches";
+        if (branches.size() > MAX_BRANCHES) {
+            errors.add(path + " cannot contain more than " + MAX_BRANCHES + " branches");
+        }
+        int limit = Math.min(branches.size(), MAX_BRANCHES);
+        for (int i = 0; i < limit; i++) {
+            Branch branch = branches.get(i);
+            String branchPath = path + "[" + i + "]";
+            if (branch == null) {
+                errors.add(branchPath + " is required");
                 continue;
             }
-            if (block.assignments().size() > MAX_ASSIGNMENTS) {
-                errors.add(path + ".assignments cannot contain more than " + MAX_ASSIGNMENTS + " items");
+            if (branch.ifArm() == null) {
+                errors.add(branchPath + ".if is required");
+            } else {
+                validateArm(branchPath + ".if", branch.ifArm(), binding, self, boundNodes, true, errors);
             }
-            int assignmentLimit = Math.min(block.assignments().size(), MAX_ASSIGNMENTS);
-            for (int j = 0; j < assignmentLimit; j++) {
-                validateAssignment(path + ".assignments[" + j + "]", block.binding(), block.assignments().get(j), factNode, assigned, errors);
+            List<BranchArm> elseIf = branch.elseIf();
+            if (elseIf != null) {
+                if (elseIf.size() > MAX_BRANCHES) {
+                    errors.add(branchPath + ".elseIf cannot contain more than " + MAX_BRANCHES + " arms");
+                }
+                int armLimit = Math.min(elseIf.size(), MAX_BRANCHES);
+                for (int j = 0; j < armLimit; j++) {
+                    BranchArm arm = elseIf.get(j);
+                    String armPath = branchPath + ".elseIf[" + j + "]";
+                    if (arm == null) {
+                        errors.add(armPath + " is required");
+                        continue;
+                    }
+                    validateArm(armPath, arm, binding, self, boundNodes, true, errors);
+                }
             }
+            if (branch.otherwise() != null) {
+                validateArm(branchPath + ".else", branch.otherwise(), binding, self, boundNodes, false, errors);
+            }
+        }
+    }
+
+    private static void validateArm(String path,
+                                    BranchArm arm,
+                                    String binding,
+                                    FieldNode self,
+                                    Map<String, FieldNode> boundNodes,
+                                    boolean requireWhen,
+                                    List<String> errors) {
+        if (requireWhen) {
+            if (arm.when() == null) {
+                errors.add(path + ".when is required");
+            } else {
+                ConditionChecker.checkBranch(path + ".when", arm.when(), self, boundNodes, errors);
+            }
+        } else if (arm.when() != null) {
+            errors.add(path + ".when is not allowed on else");
+        }
+        if (arm.assignments() == null || arm.assignments().isEmpty()) {
+            errors.add(path + ".assignments must contain at least one assignment");
+            return;
+        }
+        if (arm.assignments().size() > MAX_ASSIGNMENTS) {
+            errors.add(path + ".assignments cannot contain more than " + MAX_ASSIGNMENTS + " items");
+        }
+        Set<String> assigned = new HashSet<>();
+        int limit = Math.min(arm.assignments().size(), MAX_ASSIGNMENTS);
+        for (int i = 0; i < limit; i++) {
+            validateAssignment(path + ".assignments[" + i + "]", binding, arm.assignments().get(i), self, assigned, errors);
         }
     }
 

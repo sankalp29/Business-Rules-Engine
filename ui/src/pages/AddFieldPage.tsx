@@ -41,8 +41,8 @@ export function AddFieldPage() {
 
   return (
     <div className="stack page">
-      <Link className="back" to="/fields">
-        All fields
+      <Link className="back" to={typeName ? `/types/${encodeURIComponent(typeName)}` : "/types"}>
+        {typeName || "Types"}
       </Link>
       <PageHead
         eyebrow="Field"

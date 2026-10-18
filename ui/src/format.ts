@@ -1,4 +1,4 @@
-import type { Assignment, Condition, EffectiveSegment, RuleResponse, RuleVersion } from "./model"
+import type { Assignment, Condition, EffectiveSegment, RuleResponse, RuleVersion, StageMark } from "./model"
 
 export function ruleKey(rule: Pick<RuleResponse, "code" | "id">): string {
   return rule.code || String(rule.id)
@@ -231,4 +231,117 @@ export function findVersion(versions: readonly RuleVersion[], token: string | un
   const canonical = canonicalVersion(token)
   if (!canonical) return undefined
   return versions.find((version) => version.version.toLowerCase() === canonical)
+}
+
+/** A missing stage is a version stored before approval. It already counts as approved. */
+export function isApprovedStage(version: { stage?: string | null }): boolean {
+  const stage = version.stage?.trim()
+  return !stage || stage === "APPROVED"
+}
+
+/** The version both covers this minute and has finished approval. */
+export function runsNow(version: { active: boolean; stage?: string | null }): boolean {
+  return version.active && isApprovedStage(version)
+}
+
+/**
+ * Draft is the only editable stage. When the server omits the flag, a missing stage stays
+ * editable so an older server does not lock the desk.
+ */
+export function isEditable(version: { editable?: boolean | null; stage?: string | null }): boolean {
+  if (typeof version.editable === "boolean") return version.editable
+  const stage = version.stage?.trim()
+  return !stage || stage === "DRAFT"
+}
+
+export function stageText(version: { stage?: string | null; stageLabel?: string | null }): string {
+  const label = version.stageLabel?.trim()
+  if (label) return label
+  if (isApprovedStage(version)) return "Approved"
+  if (!version.stage || version.stage.trim() === "DRAFT") return "Draft"
+  return version.stage.trim()
+}
+
+/** Uses the server marks. Without them, draws Draft and Approved around the current stage. */
+export function approvalMarks(version: Pick<RuleVersion, "stage" | "stageLabel" | "stages">): StageMark[] {
+  if (version.stages && version.stages.length > 0) return version.stages
+  if (isApprovedStage(version)) {
+    return [
+      { name: "DRAFT", label: "Draft", status: "complete" },
+      { name: "APPROVED", label: "Approved", status: "current" },
+    ]
+  }
+  const stage = version.stage?.trim()
+  if (!stage || stage === "DRAFT") {
+    return [
+      { name: "DRAFT", label: "Draft", status: "current" },
+      { name: "APPROVED", label: "Approved", status: "upcoming" },
+    ]
+  }
+  return [
+    { name: "DRAFT", label: "Draft", status: "complete" },
+    { name: stage, label: stageText(version), status: "current" },
+    { name: "APPROVED", label: "Approved", status: "upcoming" },
+  ]
+}
+
+const STAGE_NAME = /^[A-Za-z][A-Za-z0-9 ._-]*$/
+
+/** Middle-stage names for a new approval path. Messages match the server. */
+export function approvalStageErrors(raw: readonly string[]): string[] {
+  const errors: string[] = []
+  if (raw.length > 8) {
+    errors.push("An approval path can have at most 8 stages between draft and approved.")
+  }
+  const seen = new Set<string>()
+  raw.forEach((item, index) => {
+    const label = `Stage ${index + 1}`
+    const name = item.trim().replace(/\s+/g, " ")
+    if (!name) {
+      errors.push(`${label} needs a name.`)
+      return
+    }
+    if (name.length > 40) {
+      errors.push(`${label} must be 40 characters or fewer.`)
+      return
+    }
+    if (!STAGE_NAME.test(name)) {
+      errors.push(`${label} must start with a letter and use only letters, digits, spaces, periods, underscores, or hyphens.`)
+      return
+    }
+    if (name.toLowerCase() === "draft" || name.toLowerCase() === "approved") {
+      errors.push(`${label} cannot be named Draft or Approved.`)
+      return
+    }
+    if (seen.has(name.toLowerCase())) {
+      errors.push(`${label} repeats ${name}.`)
+      return
+    }
+    seen.add(name.toLowerCase())
+  })
+  return errors
+}
+
+export function versionSummary(rule: Pick<RuleResponse, "versions">): string {
+  const versions = rule.versions ?? []
+  const count = versions.length
+  const noun = `${count} ${count === 1 ? "version" : "versions"}`
+  const running = versions.find((version) => runsNow(version))
+  if (running) return `${noun} · ${running.version} running now`
+  const pending = versions.find((version) => version.active && !isApprovedStage(version))
+  if (pending) {
+    return `${noun} · ${pending.version} is in ${stageText(pending)} and will not run until it is approved`
+  }
+  return `${noun} · none running now`
+}
+
+export function runNote(rule: Pick<RuleResponse, "activeVersion" | "versions">): string {
+  const current = activeVersionOf(rule)
+  if (current && runsNow(current)) {
+    return `Running the rule uses ${current.version}, the approved version whose dates include this moment.`
+  }
+  if (current && current.active && !isApprovedStage(current)) {
+    return `${current.version} is in ${stageText(current)} and will not run until it is approved.`
+  }
+  return "No version is active right now. Running the rule fails until a version's dates include this moment."
 }

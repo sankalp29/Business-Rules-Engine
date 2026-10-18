@@ -1,6 +1,19 @@
 import { useId } from "react"
-import { emptyAssignment, emptyComparison, type AssignmentDraft, type ThenDraft, type ValueFieldOption, type WhenDraft } from "../drafts"
-import { bindingFor, isPrimitive, uid, type Leaf, type TypeResponse } from "../model"
+import {
+  chainLeaves,
+  chainValueFields,
+  emptyArm,
+  emptyAssignment,
+  emptyBranch,
+  emptyComparison,
+  type ArmDraft,
+  type AssignmentDraft,
+  type BranchDraft,
+  type ThenDraft,
+  type ValueFieldOption,
+  type WhenDraft,
+} from "../drafts"
+import { bindingFor, isPrimitive, leafText, uid, type Leaf, type TypeResponse } from "../model"
 import { ConditionEditor } from "./ConditionEditor"
 import { TypedControl } from "./TypedControl"
 
@@ -93,53 +106,76 @@ export function ThenBlockEditor({
   index,
   block,
   bindings,
+  bindingLabels,
+  bindingName = "Binding",
   leaves,
+  whens,
+  leavesByWhen,
   canRemove,
+  framed = true,
   onChange,
   onRemove,
 }: {
   index: number
   block: ThenDraft
   bindings: string[]
+  bindingLabels?: ReadonlyMap<string, string>
+  bindingName?: string
   leaves: Leaf[]
+  whens: WhenDraft[]
+  leavesByWhen: Leaf[][]
   canRemove: boolean
+  framed?: boolean
   onChange: (block: ThenDraft) => void
   onRemove: () => void
 }) {
   const bindingId = useId()
-  return (
-    <section className="sheet block">
-      <header className="sheet-head">
-        <h2>Then {index + 1}</h2>
-        {canRemove ? (
+  const branches = block.branches ?? []
+  const conditionLeaves = chainLeaves(block.binding, whens, leavesByWhen)
+  const valueFields = chainValueFields(block.binding, whens, leavesByWhen)
+  const canDropAssignment = block.assignments.length > 1 || branches.length > 0
+  const body = (
+    <>
+      {framed ? (
+        <header className="sheet-head">
+          <h2>Then {index + 1}</h2>
+          {canRemove ? (
+            <button type="button" className="ghost" onClick={onRemove}>
+              Remove
+            </button>
+          ) : null}
+        </header>
+      ) : null}
+      <div className={framed ? undefined : "fact-row"}>
+        <label className="field" htmlFor={bindingId}>
+          <span className="label-text">{bindingName}</span>
+          <select
+            id={bindingId}
+            className="control"
+            value={block.binding}
+            onChange={(event) => onChange({ ...block, binding: event.target.value })}
+          >
+            <option value="">{bindingName === "Fact" ? "Choose a fact" : "Choose a binding"}</option>
+            {bindings.map((binding) => (
+              <option key={binding} value={binding}>
+                {bindingLabels?.get(binding) ?? binding}
+              </option>
+            ))}
+          </select>
+        </label>
+        {!framed && canRemove ? (
           <button type="button" className="ghost" onClick={onRemove}>
             Remove
           </button>
         ) : null}
-      </header>
-      <label className="field" htmlFor={bindingId}>
-        <span className="label-text">Binding</span>
-        <select
-          id={bindingId}
-          className="control"
-          value={block.binding}
-          onChange={(event) => onChange({ ...block, binding: event.target.value })}
-        >
-          <option value="">Choose a binding</option>
-          {bindings.map((binding) => (
-            <option key={binding} value={binding}>
-              {binding}
-            </option>
-          ))}
-        </select>
-      </label>
+      </div>
       <div className="stack">
         {block.assignments.map((assignment) => (
           <AssignmentRow
             key={assignment.id}
             assignment={assignment}
             leaves={leaves}
-            canRemove={block.assignments.length > 1}
+            canRemove={canDropAssignment}
             onChange={(next) =>
               onChange({
                 ...block,
@@ -157,7 +193,203 @@ export function ThenBlockEditor({
       >
         Add assignment
       </button>
+      {branches.length > 0 && block.assignments.length > 0 ? (
+        <p className="note">These actions run when the when condition matches, before any branch.</p>
+      ) : null}
+      {branches.length > 0 ? (
+        <p className="note">
+          Each branch is an if, else if, else chain. The first matching arm runs. A later branch can replace a field an earlier one set.
+        </p>
+      ) : (
+        <p className="note">A branch is an if, else if, else chain. It runs only after the when condition matches.</p>
+      )}
+      {branches.length > 0 ? (
+        <div className="branch-stack">
+          {branches.map((branch, branchIndex) => (
+            <BranchChainEditor
+              key={branch.id}
+              branch={branch}
+              index={branchIndex}
+              conditionLeaves={conditionLeaves}
+              valueFields={valueFields}
+              assignmentLeaves={leaves}
+              onChange={(next) =>
+                onChange({
+                  ...block,
+                  branches: branches.map((item) => (item.id === branch.id ? next : item)),
+                })
+              }
+              onRemove={() =>
+                onChange({
+                  ...block,
+                  branches: branches.filter((item) => item.id !== branch.id),
+                  assignments: branches.length === 1 && block.assignments.length === 0 ? [emptyAssignment()] : block.assignments,
+                })
+              }
+            />
+          ))}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        className="ghost"
+        onClick={() =>
+          onChange({
+            ...block,
+            assignments: branches.length === 0 && block.assignments.every(untouchedAssignment) ? [] : block.assignments,
+            branches: [...branches, emptyBranch()],
+          })
+        }
+      >
+        Add a branch
+      </button>
+    </>
+  )
+  if (!framed) return <div className="stack then-plain">{body}</div>
+  return <section className="sheet block">{body}</section>
+}
+
+function BranchChainEditor({
+  branch,
+  index,
+  conditionLeaves,
+  valueFields,
+  assignmentLeaves,
+  onChange,
+  onRemove,
+}: {
+  branch: BranchDraft
+  index: number
+  conditionLeaves: Leaf[]
+  valueFields: ValueFieldOption[]
+  assignmentLeaves: Leaf[]
+  onChange: (branch: BranchDraft) => void
+  onRemove: () => void
+}) {
+  return (
+    <section className="branch-card" aria-label={`Branch ${index + 1}`}>
+      <header className="sheet-head">
+        <h3 className="branch-kicker">Branch {index + 1}</h3>
+        <button type="button" className="ghost" onClick={onRemove}>
+          Remove branch
+        </button>
+      </header>
+      <ArmEditor
+        kicker="If"
+        arm={branch.ifArm}
+        conditionLeaves={conditionLeaves}
+        valueFields={valueFields}
+        assignmentLeaves={assignmentLeaves}
+        onChange={(ifArm) => onChange({ ...branch, ifArm })}
+      />
+      {branch.elseIf.map((arm, armIndex) => (
+        <ArmEditor
+          key={arm.id}
+          kicker="Else if"
+          arm={arm}
+          conditionLeaves={conditionLeaves}
+          valueFields={valueFields}
+          assignmentLeaves={assignmentLeaves}
+          onChange={(next) => onChange({ ...branch, elseIf: branch.elseIf.map((item) => (item.id === arm.id ? next : item)) })}
+          onRemove={() => onChange({ ...branch, elseIf: branch.elseIf.filter((item) => item.id !== arm.id) })}
+          removeLabel={`Remove else if ${armIndex + 1}`}
+        />
+      ))}
+      {branch.otherwise ? (
+        <ArmEditor
+          kicker="Else"
+          arm={branch.otherwise}
+          conditionLeaves={conditionLeaves}
+          valueFields={valueFields}
+          assignmentLeaves={assignmentLeaves}
+          onChange={(otherwise) => onChange({ ...branch, otherwise })}
+          onRemove={() => onChange({ ...branch, otherwise: null })}
+          removeLabel="Remove else"
+        />
+      ) : null}
+      <div className="row">
+        <button type="button" className="ghost" onClick={() => onChange({ ...branch, elseIf: [...branch.elseIf, emptyArm(true)] })}>
+          Add else if
+        </button>
+        {branch.otherwise ? null : (
+          <button type="button" className="ghost" onClick={() => onChange({ ...branch, otherwise: emptyArm(false) })}>
+            Add else
+          </button>
+        )}
+      </div>
     </section>
+  )
+}
+
+function ArmEditor({
+  kicker,
+  arm,
+  conditionLeaves,
+  valueFields,
+  assignmentLeaves,
+  onChange,
+  onRemove,
+  removeLabel,
+}: {
+  kicker: string
+  arm: ArmDraft
+  conditionLeaves: Leaf[]
+  valueFields: ValueFieldOption[]
+  assignmentLeaves: Leaf[]
+  onChange: (arm: ArmDraft) => void
+  onRemove?: () => void
+  removeLabel?: string
+}) {
+  return (
+    <div className="branch-step">
+      <div className="sheet-head">
+        <h3 className="branch-kicker">{kicker}</h3>
+        {onRemove ? (
+          <button type="button" className="ghost" onClick={onRemove}>
+            {removeLabel ?? "Remove"}
+          </button>
+        ) : null}
+      </div>
+      {arm.when ? (
+        <ConditionEditor
+          node={arm.when}
+          leaves={conditionLeaves}
+          valueFields={valueFields}
+          onChange={(when) => onChange({ ...arm, when })}
+          onExtend={() =>
+            onChange({
+              ...arm,
+              when: { id: uid(), kind: "group", operator: "and", children: [arm.when ?? emptyComparison(), emptyComparison()] },
+            })
+          }
+        />
+      ) : null}
+      <div className="stack">
+        {arm.assignments.map((assignment) => (
+          <AssignmentRow
+            key={assignment.id}
+            assignment={assignment}
+            leaves={assignmentLeaves}
+            canRemove={arm.assignments.length > 1}
+            onChange={(next) => onChange({ ...arm, assignments: arm.assignments.map((item) => (item.id === assignment.id ? next : item)) })}
+            onRemove={() => onChange({ ...arm, assignments: arm.assignments.filter((item) => item.id !== assignment.id) })}
+          />
+        ))}
+      </div>
+      <button type="button" className="ghost" onClick={() => onChange({ ...arm, assignments: [...arm.assignments, emptyAssignment()] })}>
+        Add assignment
+      </button>
+    </div>
+  )
+}
+
+function untouchedAssignment(assignment: AssignmentDraft): boolean {
+  return (
+    assignment.field.trim() === "" &&
+    assignment.expression.trim() === "" &&
+    assignment.valueText.trim() === "" &&
+    !assignment.valueBool &&
+    !assignment.valueNull
   )
 }
 
@@ -201,7 +433,7 @@ function AssignmentRow({
           <option value="">Choose a field</option>
           {leaves.map((item) => (
             <option key={item.path} value={item.path}>
-              {item.path} · {item.type}
+              {leafText(item)}
             </option>
           ))}
         </select>
@@ -235,7 +467,7 @@ function AssignmentRow({
         ) : assignment.valueNull ? null : (
           <TypedControl
             id={valueId}
-            label={leaf.path}
+            label={leaf.label ?? leaf.path}
             typeName={leaf.type}
             text={assignment.valueText}
             bool={assignment.valueBool}

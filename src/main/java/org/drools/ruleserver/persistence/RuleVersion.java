@@ -81,6 +81,28 @@ public class RuleVersion {
     @Column(name = "effective_segments", columnDefinition = "text")
     private String effectiveSegments;
 
+    /**
+     * Approval path this version was created with. Null on a row stored before paths existed.
+     */
+    @Column(name = "workflow_id")
+    private Long workflowId;
+
+    /**
+     * {@code DRAFT}, a configured stage name, or {@code APPROVED}. Null means the version was
+     * stored before approval and is already approved.
+     */
+    @Column(name = "stage", length = 40)
+    private String stage;
+
+    @Column(name = "returned_from_stage", length = 40)
+    private String returnedFromStage;
+
+    @Column(name = "returned_comment", length = 2000)
+    private String returnedComment;
+
+    @Column(name = "returned_at")
+    private Instant returnedAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -157,6 +179,46 @@ public class RuleVersion {
 
     public void setEffectiveSegments(String effectiveSegments) {
         this.effectiveSegments = effectiveSegments;
+    }
+
+    public Long getWorkflowId() {
+        return workflowId;
+    }
+
+    public void setWorkflowId(Long workflowId) {
+        this.workflowId = workflowId;
+    }
+
+    public String getStage() {
+        return stage;
+    }
+
+    public void setStage(String stage) {
+        this.stage = stage;
+    }
+
+    public String getReturnedFromStage() {
+        return returnedFromStage;
+    }
+
+    public void setReturnedFromStage(String returnedFromStage) {
+        this.returnedFromStage = returnedFromStage;
+    }
+
+    public String getReturnedComment() {
+        return returnedComment;
+    }
+
+    public void setReturnedComment(String returnedComment) {
+        this.returnedComment = returnedComment;
+    }
+
+    public Instant getReturnedAt() {
+        return returnedAt;
+    }
+
+    public void setReturnedAt(Instant returnedAt) {
+        this.returnedAt = returnedAt;
     }
 
     public Instant getCreatedAt() {

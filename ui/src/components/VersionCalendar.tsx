@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react"
+import { useState, type CSSProperties, type ReactNode } from "react"
 import { Link } from "react-router-dom"
 import {
   daySlices,
@@ -20,10 +20,12 @@ export function VersionCalendar({
   versions,
   ruleKey,
   focusVersion,
+  solo = false,
 }: {
   versions: RuleVersion[]
   ruleKey: string
   focusVersion?: string | null
+  solo?: boolean
 }) {
   const spans = spansOf(versions)
   const [cursor, setCursor] = useState(() => openingMonth(spans, focusVersion))
@@ -54,23 +56,21 @@ export function VersionCalendar({
           </button>
         </div>
       </div>
-      <ul className="legend">
-        {versions.map((version) => {
-          const color = versionColor(version.versionNumber)
-          return (
-            <li key={version.version}>
-              <Link
-                to={versionHref(ruleKey, version.version)}
-                style={paint(color.ink, color.wash)}
-              >
-                <span className="swatch" aria-hidden="true" />
-                <span className="mono">{version.version}</span>
-                {version.active ? <span className="pill">Active</span> : null}
-              </Link>
-            </li>
-          )
-        })}
-      </ul>
+      {solo ? null : (
+        <ul className="legend">
+          {versions.map((version) => {
+            const color = versionColor(version.versionNumber)
+            return (
+              <li key={version.version}>
+                <Link to={versionHref(ruleKey, version.version)} style={paint(color.ink, color.wash)}>
+                  <span className="swatch" aria-hidden="true" />
+                  <span className="mono">{version.version}</span>
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
+      )}
       <div className="calendar-board">
         <div className="calendar-weekdays" aria-hidden="true">
           {WEEKDAYS.map((day) => (
@@ -89,16 +89,17 @@ export function VersionCalendar({
             const dim = Boolean(focusVersion) && full.version !== focusVersion
             const focused = Boolean(focusVersion) && full.version === focusVersion
             return (
-              <Link
+              <DayMark
                 key={day}
-                className={cellClass({ full: true, today: isToday, dim, focused })}
+                linked={!solo}
                 to={versionHref(ruleKey, full.version)}
+                className={cellClass({ full: true, today: isToday, dim, focused })}
                 style={paint(color.ink, color.wash)}
-                aria-label={label}
+                label={label}
               >
                 <span className="day-num">{day}</span>
                 <span className="day-version">{full.version}</span>
-              </Link>
+              </DayMark>
             )
           }
           return (
@@ -109,16 +110,17 @@ export function VersionCalendar({
                 const dim = Boolean(focusVersion) && slice.version !== focusVersion
                 const focused = Boolean(focusVersion) && slice.version === focusVersion
                 return (
-                  <Link
+                  <DayMark
                     key={`${slice.version}-${slice.fromMinute}`}
-                    className={bandClass(dim, focused)}
+                    linked={!solo}
                     to={versionHref(ruleKey, slice.version)}
+                    className={bandClass(dim, focused)}
                     style={paint(color.ink, color.wash)}
-                    aria-label={sliceLabel(slice)}
+                    label={sliceLabel(slice)}
                   >
                     <span className="band-version">{slice.version}</span>
                     <span className="band-time">{bandTime(slice)}</span>
-                  </Link>
+                  </DayMark>
                 )
               })}
             </div>
@@ -126,8 +128,41 @@ export function VersionCalendar({
         })}
         </div>
       </div>
-      <p className="note">Days and times are India Standard Time. A shared day lists each version with its hours.</p>
+      <p className="note">
+        {solo
+          ? "Days and times are India Standard Time. A day or hour is marked only while this version is effective."
+          : "Days and times are India Standard Time. A shared day lists each version with its hours."}
+      </p>
     </section>
+  )
+}
+
+function DayMark({
+  linked,
+  to,
+  className,
+  style,
+  label,
+  children,
+}: {
+  linked: boolean
+  to: string
+  className: string
+  style: CSSProperties
+  label: string
+  children: ReactNode
+}) {
+  if (!linked) {
+    return (
+      <div className={className} style={style}>
+        {children}
+      </div>
+    )
+  }
+  return (
+    <Link className={className} to={to} style={style} aria-label={label}>
+      {children}
+    </Link>
   )
 }
 

@@ -1,4 +1,4 @@
-import type { ExecutionResponse, RuleResponse, RuleVersion, TypeResponse } from "./model"
+import type { ApprovalWorkflow, ExecutionResponse, RuleResponse, RuleVersion, TypeResponse } from "./model"
 
 const base = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "")
 
@@ -71,6 +71,22 @@ export const api = {
     request<RuleVersion>(`/api/rules/${encodeURIComponent(key)}/versions/${encodeURIComponent(version)}`),
   createVersion: (key: string, body: unknown) =>
     request<RuleVersion>(`/api/rules/${encodeURIComponent(key)}/versions`, { method: "POST", body: JSON.stringify(body) }),
+  updateVersion: (key: string, version: string, body: unknown) =>
+    request<RuleVersion>(`/api/rules/${encodeURIComponent(key)}/versions/${encodeURIComponent(version)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  decide: (key: string, version: string, body: { action: "APPROVE" | "REJECT"; comment?: string }) =>
+    request<RuleVersion>(
+      `/api/rules/${encodeURIComponent(key)}/versions/${encodeURIComponent(version)}/decision`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  listWorkflows: () => request<ApprovalWorkflow[]>("/api/approval-workflows"),
+  publishWorkflow: (stages: string[]) =>
+    request<ApprovalWorkflow>("/api/approval-workflows", {
+      method: "POST",
+      body: JSON.stringify({ stages }),
+    }),
   changeDates: (
     key: string,
     version: string,

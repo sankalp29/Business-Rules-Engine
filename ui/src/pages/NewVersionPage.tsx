@@ -2,20 +2,20 @@ import { useEffect, useMemo, useState, type FormEvent } from "react"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { ApiError, api } from "../api"
 import { Banner } from "../components/Banner"
+import { OverlapConfirm } from "../components/OverlapConfirm"
 import { PageHead } from "../components/PageHead"
 import { PeriodFields } from "../components/PeriodFields"
+import { LogicFields } from "../components/LogicFields"
 import { VersionCalendar } from "../components/VersionCalendar"
-import { ThenBlockEditor, WhenBlockEditor } from "../components/WhenThenEditors"
 import {
   buildRule,
   draftFromVersion,
-  emptyThen,
-  emptyWhen,
+  overlappingWindows,
+  periodsOfSubmission,
   sanitizeNumber,
   suggestNextWindow,
-  valueFieldOptions,
+  type DateOverlap,
   type RuleDraft,
-  type WhenDraft,
 } from "../drafts"
 import { ruleKey } from "../format"
 import { useTypes } from "../hooks"
@@ -33,6 +33,7 @@ export function NewVersionPage() {
   const [problems, setProblems] = useState<string[]>([])
   const [pending, setPending] = useState(false)
   const [loadError, setLoadError] = useState<ApiError | null>(null)
+  const [overlaps, setOverlaps] = useState<DateOverlap[] | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -69,40 +70,25 @@ export function NewVersionPage() {
     [catalog, draft?.whens],
   )
   const built = draft ? buildRule(draft, leavesByWhen) : { body: null, errors: [] }
-  const bindings = [...new Set((draft?.whens ?? []).map((when) => when.binding.trim()).filter(Boolean))]
 
-  function updateWhen(id: string, recipe: (when: WhenDraft) => WhenDraft) {
-    setDraft((current) => {
-      if (!current) return current
-      const previous = current.whens.find((when) => when.id === id)
-      if (!previous) return current
-      const nextWhen = recipe(previous)
-      const whens = current.whens.map((when) => (when.id === id ? nextWhen : when))
-      if (previous.binding === nextWhen.binding) return { ...current, whens }
-      const thens = current.thens.map((then) =>
-        then.binding === previous.binding ? { ...then, binding: nextWhen.binding } : then,
-      )
-      return { ...current, whens, thens }
-    })
+  function updateDraft(recipe: (current: RuleDraft) => RuleDraft) {
+    setDraft((current) => (current ? recipe(current) : current))
   }
 
-  function removeWhen(id: string) {
-    setDraft((current) => {
-      if (!current || current.whens.length < 2) return current
-      const whens = current.whens.filter((when) => when.id !== id)
-      const alive = new Set(whens.map((when) => when.binding))
-      const fallback = whens[0]?.binding ?? ""
-      const thens = current.thens.map((then) => (alive.has(then.binding) ? then : { ...then, binding: fallback }))
-      return { ...current, whens, thens }
-    })
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
+  async function submit(event?: FormEvent, confirmed = false) {
+    event?.preventDefault()
     if (!rule || !built.body) {
+      setOverlaps(null)
       setProblems(built.errors)
       return
     }
+    const hits = overlappingWindows(periodsOfSubmission(built.body), rule.versions ?? [], "")
+    if (hits.length > 0 && !confirmed) {
+      setProblems([])
+      setOverlaps(hits)
+      return
+    }
+    setOverlaps(null)
     setPending(true)
     setProblems([])
     try {
@@ -166,8 +152,17 @@ export function NewVersionPage() {
       {problems.length > 0 ? <Banner tone="error" title="The version was not saved." details={problems} /> : null}
       {versions.length === 0 ? <p className="note">No versions yet.</p> : <VersionCalendar versions={versions} ruleKey={ruleKey(rule)} />}
       <p className="note">
-        A period that sits strictly inside another version splits that version, so the earlier version resumes after it. A partial overlap is rejected.
+        A period that overlaps another version adjusts that version, after you confirm the overlapped window. A period strictly inside another version splits it, so the earlier version resumes afterwards.
       </p>
+      {overlaps && overlaps.length > 0 ? (
+        <OverlapConfirm
+          hits={overlaps}
+          pending={pending}
+          confirmLabel={`Save v${nextNumber}`}
+          onConfirm={() => void submit(undefined, true)}
+          onCancel={() => setOverlaps(null)}
+        />
+      ) : null}
       <div className="author">
         <form className="stack" noValidate onSubmit={(event) => void submit(event)}>
           <section className="sheet stack">
@@ -195,7 +190,10 @@ export function NewVersionPage() {
               idPrefix="version"
               draft={draft}
               describedBy="version-dates-note"
-              onChange={(next) => setDraft(next)}
+              onChange={(next) => {
+                setOverlaps(null)
+                setDraft(next)
+              }}
             />
             <p className="note" id="version-dates-note">
               Add a period when this version should pause and resume. Add a one-day period for a flash, from 00:00 to 23:59. If that day sits inside the long period on this form, remove the long period or move the day outside it.
@@ -214,56 +212,7 @@ export function NewVersionPage() {
               />
             </label>
           </section>
-          {draft.whens.map((when, index) => (
-            <WhenBlockEditor
-              key={when.id}
-              index={index}
-              when={when}
-              types={types ?? []}
-              leaves={leavesByWhen[index] ?? []}
-              valueFields={valueFieldOptions(
-                leavesByWhen[index] ?? [],
-                draft.whens.slice(0, index).map((block, blockIndex) => ({
-                  binding: block.binding,
-                  leaves: leavesByWhen[blockIndex] ?? [],
-                })),
-              )}
-              canRemove={draft.whens.length > 1}
-              onChange={(next) => updateWhen(when.id, () => next)}
-              onRemove={() => removeWhen(when.id)}
-            />
-          ))}
-          <button type="button" className="ghost" onClick={() => setDraft((current) => (current ? { ...current, whens: [...current.whens, emptyWhen()] } : current))}>
-            Add when block
-          </button>
-          {draft.thens.map((block, index) => {
-            const whenIndex = draft.whens.findIndex((when) => when.binding.trim() === block.binding.trim())
-            return (
-              <ThenBlockEditor
-                key={block.id}
-                index={index}
-                block={block}
-                bindings={bindings}
-                leaves={whenIndex >= 0 ? leavesByWhen[whenIndex] ?? [] : []}
-                canRemove={draft.thens.length > 1}
-                onChange={(next) =>
-                  setDraft((current) =>
-                    current ? { ...current, thens: current.thens.map((item) => (item.id === block.id ? next : item)) } : current,
-                  )
-                }
-                onRemove={() =>
-                  setDraft((current) => (current ? { ...current, thens: current.thens.filter((item) => item.id !== block.id) } : current))
-                }
-              />
-            )
-          })}
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => setDraft((current) => (current ? { ...current, thens: [...current.thens, emptyThen(bindings[0] ?? "")] } : current))}
-          >
-            Add then block
-          </button>
+          <LogicFields draft={draft} types={types ?? []} leavesByWhen={leavesByWhen} onChange={updateDraft} />
           <div className="actions">
             <button type="submit" className="primary" disabled={pending || loading}>
               {pending ? "Saving…" : `Save v${nextNumber}`}

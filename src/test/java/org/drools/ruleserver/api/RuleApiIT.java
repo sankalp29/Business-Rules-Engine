@@ -37,6 +37,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.drools.ruleserver.persistence.AuthoredRule;
 import org.drools.ruleserver.persistence.AuthoredRuleRepository;
+import org.drools.ruleserver.persistence.RuleVersionTransition;
+import org.drools.ruleserver.persistence.RuleVersionTransitionRepository;
 import org.drools.ruleserver.rules.EffectiveWindow;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -78,6 +80,9 @@ class RuleApiIT {
 
     @Autowired
     private AuthoredRuleRepository repository;
+
+    @Autowired
+    private RuleVersionTransitionRepository transitions;
 
     @Autowired
     private MutableClock clock;
@@ -129,6 +134,7 @@ class RuleApiIT {
         assertThat(stored.getDefinition()).doesNotContain("effectiveFrom");
         assertThat(stored.getDrl()).contains("declare Customer");
         assertThat(stored.getDrl()).contains("address : Address");
+        approve("senior-discount-without-types", "v1");
 
         mockMvc.perform(get("/api/rules/senior-discount-without-types"))
                 .andExpect(status().isOk())
@@ -200,6 +206,7 @@ class RuleApiIT {
                         .content(Files.readString(Path.of("examples/create-move-city.json"))))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", "/api/rules/move-city"));
+        approve("move-city", "v1");
         JsonNode moved = postJson(
                 "/api/rules/move-city/execute",
                 Files.readString(Path.of("examples/execute-move-city.json")),
@@ -220,6 +227,7 @@ class RuleApiIT {
                         .content(Files.readString(Path.of("examples/create-large-adult-order.json"))))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", "/api/rules/large-adult-order-without-types"));
+        approve("large-adult-order-without-types", "v1");
         JsonNode approved = postJson(
                 "/api/rules/large-adult-order-without-types/execute",
                 Files.readString(Path.of("examples/execute-large-adult-order.json")),
@@ -232,6 +240,7 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(Files.readString(Path.of("examples/create-priority-customer.json"))))
                 .andExpect(status().isCreated());
+        approve("priority-customer-without-types", "v1");
         JsonNode priority = postJson(
                 "/api/rules/priority-customer-without-types/execute",
                 Files.readString(Path.of("examples/execute-priority-customer.json")),
@@ -341,6 +350,14 @@ class RuleApiIT {
         mockMvc.perform(put("/api/rules/" + id + "/versions/v1/dates")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(dates("2026-10-18", "2099-12-31")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("Logic and dates can be changed only while the version is in draft."));
+
+        reject(String.valueOf(id), "v1", "Give the original version a real end.");
+
+        mockMvc.perform(put("/api/rules/" + id + "/versions/v1/dates")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(dates("2026-10-18", "2099-12-31")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.details[0]").value("effectiveFrom cannot change because it is already before the current time"));
 
@@ -358,6 +375,7 @@ class RuleApiIT {
         AuthoredRule storedLegacy = repository.findById(id).orElseThrow();
         assertThat(storedLegacy.getDefinition()).contains("\"facts\"");
         assertThat(storedLegacy.getDescription()).isEqualTo("Stored before codes existed");
+        approve(String.valueOf(id), "v1");
 
         JsonNode stillLegacy = postJson(
                 "/api/rules/" + id + "/execute",
@@ -489,6 +507,8 @@ class RuleApiIT {
         assertThat(rule.get("versions").get(0).get("active").asBoolean()).isTrue();
         assertThat(rule.get("name").asText()).isEqualTo("Assign tier");
         assertThat(rule.get("versions").get(0).get("effectiveFrom").asText()).isEqualTo("2026-10-17T18:30:00Z");
+        assertThat(rule.get("versions").get(0).get("stage").asText()).isEqualTo("DRAFT");
+        approve("tier-rule", "v1");
 
         JsonNode now = postJson("/api/rules/tier-rule/execute", tierFact(40), 200);
         assertThat(now.get("version").asText()).isEqualTo("v1");
@@ -520,9 +540,10 @@ class RuleApiIT {
 
         mockMvc.perform(post("/api/rules/tier-rule/versions")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(tier(null, null, "Overlap", "NO", currentFrom, today.plusMonths(1).toString())))
+                        .content(tier(null, null, "Overlap", "NO", currentFrom, currentUntil)))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("overlap v1")));
+                .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("v1 cannot be adjusted")))
+                .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("no effective dates left")));
 
         mockMvc.perform(post("/api/rules/tier-rule/versions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -548,32 +569,28 @@ class RuleApiIT {
         assertThat(stillNow.get("outputData").get(0).get("values").get("segment").asText()).isEqualTo("NOW");
 
         clock.set(LocalDate.of(2026, 10, 19).atStartOfDay(EffectiveWindow.IST).toInstant());
-
+        mockMvc.perform(post("/api/rules/tier-rule/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\",\"comment\":\"Shorten the window.\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("An approved version cannot be sent back to draft."));
         mockMvc.perform(put("/api/rules/tier-rule/versions/v1/dates")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(dates("2026-10-19", currentUntil)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.details[0]").value("effectiveFrom cannot change because it is already before the current time"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("Logic and dates can be changed only while the version is in draft."));
 
-        mockMvc.perform(put("/api/rules/tier-rule/versions/v1/dates")
+        mockMvc.perform(put("/api/rules/tier-rule/versions/v2/dates")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(dates(currentFrom, "2026-10-18")))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.details[0]").value("effectiveUntil cannot be before the current time"));
-
-        mockMvc.perform(put("/api/rules/tier-rule/versions/v1/dates")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(dates(currentFrom, "2027-06-01")))
+                        .content(dates("2027-06-01", futureUntil)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.version").value("v1"))
-                .andExpect(jsonPath("$.active").value(true))
-                .andExpect(jsonPath("$.definition.then[0].assignments[0].value").value("NOW"));
-
-        mockMvc.perform(put("/api/rules/tier-rule/versions/v1/dates")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(dates(currentFrom, futureFrom)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("overlap v2")));
+                .andExpect(jsonPath("$.version").value("v2"))
+                .andExpect(jsonPath("$.effectiveFrom").value("2027-05-31T18:30:00Z"));
+        mockMvc.perform(get("/api/rules/tier-rule/versions/v1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.effectiveFrom").value("2026-10-17T18:30:00Z"))
+                .andExpect(jsonPath("$.effectiveUntil").value("2027-05-31T18:29:00Z"))
+                .andExpect(jsonPath("$.stage").value("APPROVED"));
 
         mockMvc.perform(put("/api/rules/tier-rule/versions/v2/dates")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -666,19 +683,6 @@ class RuleApiIT {
 
         mockMvc.perform(put("/api/rules/festival-rule/versions/v3/dates")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(segments("2026-10-02", "2026-10-02", "2026-10-09", "2026-10-12")))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("overlap v2")));
-
-        mockMvc.perform(get("/api/rules/festival-rule/versions/v2"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.segments.length()").value(2));
-        mockMvc.perform(get("/api/rules/festival-rule/versions/v3"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.segments.length()").value(1));
-
-        mockMvc.perform(put("/api/rules/festival-rule/versions/v3/dates")
-                        .contentType(MediaType.APPLICATION_JSON)
                         .content(segments("2026-10-02", "2026-10-02", "2026-10-05", "2026-10-05")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.version").value("v3"))
@@ -698,6 +702,8 @@ class RuleApiIT {
                 .andExpect(jsonPath("$.segments[2].effectiveFrom").value("2026-10-05T18:30:00Z"))
                 .andExpect(jsonPath("$.segments[2].effectiveUntil").value("2026-10-10T18:29:00Z"));
 
+        approve("festival-rule", "v2");
+        approve("festival-rule", "v3");
         clock.set(LocalDate.of(2026, 10, 1).atTime(10, 0).atZone(EffectiveWindow.IST).toInstant());
         assertThat(postJson("/api/rules/festival-rule/execute", festivalFact(), 200).get("version").asText()).isEqualTo("v2");
 
@@ -716,15 +722,10 @@ class RuleApiIT {
 
         mockMvc.perform(post("/api/rules/festival-rule/versions")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(festival("TAIL", "2026-10-09", "2026-10-12")))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("overlap v2")));
-
-        mockMvc.perform(post("/api/rules/festival-rule/versions")
-                        .contentType(MediaType.APPLICATION_JSON)
                         .content(festival("SECOND", "2026-10-08", "2026-10-08")))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.version").value("v4"));
+        approve("festival-rule", "v4");
 
         mockMvc.perform(get("/api/rules/festival-rule/versions/v2"))
                 .andExpect(status().isOk())
@@ -746,11 +747,97 @@ class RuleApiIT {
         assertThat(postJson("/api/rules/festival-rule/execute", festivalFact(), 200).get("version").asText()).isEqualTo("v2");
 
         clock.set(LocalDate.of(2026, 10, 4).atStartOfDay(EffectiveWindow.IST).toInstant());
+        mockMvc.perform(post("/api/rules/festival-rule/versions/v3/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\",\"comment\":\"The flash starts too early.\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("An approved version cannot be sent back to draft."));
         mockMvc.perform(put("/api/rules/festival-rule/versions/v3/dates")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(dates("2026-10-03", "2026-10-03")))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.details[0]").value("effectiveFrom cannot change because it is already before the current time"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("Logic and dates can be changed only while the version is in draft."));
+    }
+
+    @Test
+    void changingDatesAfterAReturnToDraftAdjustsTheOverlappedVersion() throws Exception {
+        mockMvc.perform(post("/api/types")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"OverlapHolder","fields":[{"name":"age","type":"int"},{"name":"segment","type":"String"}]}
+                                """))
+                .andExpect(status().isCreated());
+        mockMvc.perform(post("/api/approval-workflows")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"stages\":[\"Checker\"]}"))
+                .andExpect(status().isCreated());
+
+        String logic = """
+                "when":[{"binding":"$holder","type":"OverlapHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"%s"}]}]
+                """;
+        mockMvc.perform(post("/api/rules")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"code":"overlap-adjust","name":"Overlap adjust","description":"First",
+                                 "effectiveFrom":"2026-11-01","effectiveUntil":"2026-12-31",
+                                 %s}
+                                """.formatted(logic.formatted("FIRST"))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.versions[0].stage").value("DRAFT"));
+        mockMvc.perform(post("/api/rules/overlap-adjust/versions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"description":"Second","effectiveFrom":"2027-01-01","effectiveUntil":"2027-03-31",
+                                 %s}
+                                """.formatted(logic.formatted("SECOND"))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.version").value("v2"));
+        approve("overlap-adjust", "v2");
+
+        mockMvc.perform(post("/api/rules/overlap-adjust/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"APPROVE\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("Checker"));
+        reject("overlap-adjust", "v1", "Extend it into January.");
+
+        mockMvc.perform(put("/api/rules/overlap-adjust/versions/v1/dates")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(dates("2026-11-01", "2027-01-20")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value("v1"))
+                .andExpect(jsonPath("$.stage").value("DRAFT"))
+                .andExpect(jsonPath("$.effectiveUntil").value("2027-01-20T18:29:00Z"));
+        mockMvc.perform(get("/api/rules/overlap-adjust/versions/v2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("APPROVED"))
+                .andExpect(jsonPath("$.effectiveFrom").value("2027-01-20T18:30:00Z"))
+                .andExpect(jsonPath("$.effectiveUntil").value("2027-03-31T18:29:00Z"));
+
+        mockMvc.perform(put("/api/rules/overlap-adjust/versions/v1/dates")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(segments("2026-11-01", "2027-01-20", "2027-02-01", "2027-02-01")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.segments.length()").value(2));
+        mockMvc.perform(get("/api/rules/overlap-adjust/versions/v2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.segments.length()").value(2))
+                .andExpect(jsonPath("$.segments[0].effectiveUntil").value("2027-01-31T18:29:00Z"))
+                .andExpect(jsonPath("$.segments[1].effectiveFrom").value("2027-02-01T18:30:00Z"))
+                .andExpect(jsonPath("$.segments[1].effectiveUntil").value("2027-03-31T18:29:00Z"));
+
+        approve("overlap-adjust", "v1");
+        mockMvc.perform(post("/api/rules/overlap-adjust/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"APPROVE\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("This version is already approved."));
+        mockMvc.perform(post("/api/rules/overlap-adjust/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\",\"comment\":\"Approved is the last stage\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("An approved version cannot be sent back to draft."));
     }
 
     @Test
@@ -776,6 +863,7 @@ class RuleApiIT {
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.versions[0].segments.length()").value(2));
+        approve("gap-rule", "v1");
 
         mockMvc.perform(post("/api/rules/gap-rule/versions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -786,6 +874,7 @@ class RuleApiIT {
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.version").value("v2"));
+        approve("gap-rule", "v2");
 
         mockMvc.perform(get("/api/rules/gap-rule/versions/v1"))
                 .andExpect(status().isOk())
@@ -800,6 +889,190 @@ class RuleApiIT {
         clock.set(LocalDate.of(2026, 11, 3).atStartOfDay(EffectiveWindow.IST).toInstant());
         assertThat(postJson("/api/rules/gap-rule/execute", fact, 200).get("outputData").get(0).get("values").get("segment").asText())
                 .isEqualTo("OUTER");
+    }
+
+    @Test
+    void approvalFollowsTheActivePathAndARejectionStartsAgainAtDraft() throws Exception {
+        mockMvc.perform(post("/api/types")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"ApprovalHolder","fields":[{"name":"age","type":"int"},{"name":"segment","type":"String"}]}
+                                """))
+                .andExpect(status().isCreated());
+
+        MvcResult published = mockMvc.perform(post("/api/approval-workflows")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"stages\":[\"Checker\",\"Sign-off\"]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.active").value(true))
+                .andExpect(jsonPath("$.stages[0]").value("Draft"))
+                .andExpect(jsonPath("$.stages[1]").value("Checker"))
+                .andExpect(jsonPath("$.stages[2]").value("Sign-off"))
+                .andExpect(jsonPath("$.stages[3]").value("Approved"))
+                .andReturn();
+        String pathVersion = objectMapper.readTree(published.getResponse().getContentAsString()).get("version").asText();
+
+        mockMvc.perform(post("/api/rules")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"code":"approval-rule","name":"Approval rule","description":"First cut",
+                                 "effectiveFrom":"2026-10-18","effectiveUntil":"2026-12-31",
+                                 "when":[{"binding":"$holder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"FIRST"}]}]}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.versions[0].stage").value("DRAFT"))
+                .andExpect(jsonPath("$.versions[0].editable").value(true))
+                .andExpect(jsonPath("$.versions[0].workflowVersion").value(pathVersion))
+                .andExpect(jsonPath("$.versions[0].stages.length()").value(4))
+                .andExpect(jsonPath("$.versions[0].stages[0].status").value("current"))
+                .andExpect(jsonPath("$.versions[0].stages[1].status").value("upcoming"));
+
+        mockMvc.perform(put("/api/rules/approval-rule/versions/v1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"description":"Revised while draft","salience":4,
+                                 "when":[{"binding":"$holder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":18}}],
+                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"REVISED"}]}]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.description").value("Revised while draft"))
+                .andExpect(jsonPath("$.definition.salience").value(4))
+                .andExpect(jsonPath("$.definition.then[0].assignments[0].value").value("REVISED"))
+                .andExpect(jsonPath("$.stage").value("DRAFT"));
+
+        mockMvc.perform(post("/api/rules/approval-rule/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"APPROVE\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("Checker"))
+                .andExpect(jsonPath("$.editable").value(false))
+                .andExpect(jsonPath("$.stages[0].status").value("complete"))
+                .andExpect(jsonPath("$.stages[1].status").value("current"))
+                .andExpect(jsonPath("$.returnedFrom").value(org.hamcrest.Matchers.nullValue()));
+
+        mockMvc.perform(put("/api/rules/approval-rule/versions/v1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"description":"Too late",
+                                 "when":[{"binding":"$holder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":18}}],
+                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"NO"}]}]}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("Logic and dates can be changed only while the version is in draft."));
+        mockMvc.perform(put("/api/rules/approval-rule/versions/v1/dates")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(dates("2026-10-18", "2026-11-30")))
+                .andExpect(status().isConflict());
+
+        mockMvc.perform(post("/api/rules/approval-rule/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.details[0]").value("A comment is required when sending a version back to draft."));
+
+        mockMvc.perform(post("/api/rules/approval-rule/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\",\"comment\":\"Age threshold is wrong\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("DRAFT"))
+                .andExpect(jsonPath("$.editable").value(true))
+                .andExpect(jsonPath("$.returnedFrom.stage").value("Checker"))
+                .andExpect(jsonPath("$.returnedFrom.comment").value("Age threshold is wrong"))
+                .andExpect(jsonPath("$.stages[0].status").value("current"))
+                .andExpect(jsonPath("$.stages[1].status").value("upcoming"))
+                .andExpect(jsonPath("$.stages[2].status").value("upcoming"))
+                .andExpect(jsonPath("$.stages[3].status").value("upcoming"));
+
+        approve("approval-rule", "v1");
+        mockMvc.perform(get("/api/rules/approval-rule/versions/v1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("APPROVED"))
+                .andExpect(jsonPath("$.editable").value(false))
+                .andExpect(jsonPath("$.returnedFrom").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.stages[0].status").value("complete"))
+                .andExpect(jsonPath("$.stages[1].status").value("complete"))
+                .andExpect(jsonPath("$.stages[2].status").value("complete"))
+                .andExpect(jsonPath("$.stages[3].status").value("current"));
+
+        mockMvc.perform(post("/api/rules/approval-rule/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"APPROVE\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("This version is already approved."));
+        mockMvc.perform(post("/api/rules/approval-rule/versions/v1/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\",\"comment\":\"Too late to send it back\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("An approved version cannot be sent back to draft."));
+        mockMvc.perform(get("/api/rules/approval-rule/versions/v1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("APPROVED"));
+
+        JsonNode fired = postJson(
+                "/api/rules/approval-rule/execute",
+                "{\"facts\":[{\"type\":\"ApprovalHolder\",\"values\":{\"age\":40,\"segment\":\"NONE\"}}]}",
+                200);
+        assertThat(fired.get("version").asText()).isEqualTo("v1");
+        assertThat(fired.get("outputData").get(0).get("values").get("segment").asText()).isEqualTo("REVISED");
+
+        mockMvc.perform(post("/api/approval-workflows")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"stages\":[\"Risk\"]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.active").value(true))
+                .andExpect(jsonPath("$.middleStages[0]").value("Risk"));
+
+        mockMvc.perform(post("/api/rules/approval-rule/versions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"description":"Next path","effectiveFrom":"2027-01-01","effectiveUntil":"2027-02-01",
+                                 "when":[{"binding":"$holder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"NEXT"}]}]}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.version").value("v2"))
+                .andExpect(jsonPath("$.stage").value("DRAFT"))
+                .andExpect(jsonPath("$.stages.length()").value(3))
+                .andExpect(jsonPath("$.stages[1].label").value("Risk"));
+
+        mockMvc.perform(get("/api/rules/approval-rule/versions/v1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.workflowVersion").value(pathVersion))
+                .andExpect(jsonPath("$.stages.length()").value(4))
+                .andExpect(jsonPath("$.stages[1].label").value("Checker"))
+                .andExpect(jsonPath("$.stage").value("APPROVED"));
+
+        mockMvc.perform(post("/api/rules/approval-rule/versions/v2/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\",\"comment\":\"It is still a draft\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details[0]").value("This version is already in draft."));
+
+        mockMvc.perform(post("/api/rules/approval-rule/versions/v2/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"APPROVE\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("Risk"));
+        mockMvc.perform(post("/api/rules/approval-rule/versions/v2/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\",\"comment\":\"Risk name is unclear\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("DRAFT"))
+                .andExpect(jsonPath("$.stages.length()").value(3))
+                .andExpect(jsonPath("$.stages[0].status").value("current"))
+                .andExpect(jsonPath("$.stages[1].status").value("upcoming"))
+                .andExpect(jsonPath("$.returnedFrom.comment").value("Risk name is unclear"));
+
+        assertThat(postJson(
+                "/api/rules/approval-rule/execute",
+                "{\"facts\":[{\"type\":\"ApprovalHolder\",\"values\":{\"age\":40,\"segment\":\"NONE\"}}]}",
+                200).get("version").asText()).isEqualTo("v1");
+
+        assertThat(transitions.findAll())
+                .anyMatch(row -> "REJECT".equals(row.getAction()) && "Age threshold is wrong".equals(row.getComment()))
+                .anyMatch(row -> "REJECT".equals(row.getAction()) && "Risk name is unclear".equals(row.getComment()));
+        assertThat(transitions.findAll().stream().map(RuleVersionTransition::getRuleVersionId).distinct().count()).isGreaterThan(1);
     }
 
     @TestConfiguration
@@ -879,5 +1152,30 @@ class RuleApiIT {
                         .content(json))
                 .andExpect(status().is(expectedStatus));
         return objectMapper.readTree(actions.andReturn().getResponse().getContentAsString());
+    }
+
+    private void approve(String key, String version) throws Exception {
+        for (int step = 0; step < 12; step++) {
+            MvcResult current = mockMvc.perform(get("/api/rules/" + key + "/versions/" + version))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            String stage = objectMapper.readTree(current.getResponse().getContentAsString()).path("stage").asText();
+            if ("APPROVED".equals(stage)) {
+                return;
+            }
+            mockMvc.perform(post("/api/rules/" + key + "/versions/" + version + "/decision")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"action\":\"APPROVE\"}"))
+                    .andExpect(status().isOk());
+        }
+        throw new AssertionError(version + " of " + key + " did not reach APPROVED");
+    }
+
+    private void reject(String key, String version, String comment) throws Exception {
+        mockMvc.perform(post("/api/rules/" + key + "/versions/" + version + "/decision")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"REJECT\",\"comment\":" + objectMapper.writeValueAsString(comment) + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("DRAFT"));
     }
 }

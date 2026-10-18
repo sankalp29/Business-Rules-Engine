@@ -1,9 +1,19 @@
 import { useState, type FormEvent } from "react"
 import { ApiError, api } from "../api"
-import { dateLocks, editEffectiveSegments, oneDayPeriod, suggestNextWindow, type SegmentEdit } from "../drafts"
+import {
+  dateLocks,
+  editEffectiveSegments,
+  oneDayPeriod,
+  overlappingWindows,
+  periodsOfSubmission,
+  suggestNextWindow,
+  type DateOverlap,
+  type SegmentEdit,
+} from "../drafts"
 import { istInputValue, istInstant } from "../format"
 import { uid, type RuleResponse, type RuleVersion } from "../model"
 import { Banner } from "./Banner"
+import { OverlapConfirm } from "./OverlapConfirm"
 
 type PeriodRow = SegmentEdit & { key: string }
 
@@ -25,15 +35,18 @@ function rowFrom(segment: { effectiveFrom: string; effectiveUntil: string | null
 export function EffectiveDatesForm({
   ruleKey,
   version,
+  versions,
   onSaved,
 }: {
   ruleKey: string
   version: RuleVersion
+  versions: readonly RuleVersion[]
   onSaved: (rule: RuleResponse) => void
 }) {
   const [rows, setRows] = useState<PeriodRow[]>(() => sourceSegments(version).map((segment) => rowFrom(segment, true)))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
+  const [overlaps, setOverlaps] = useState<DateOverlap[] | null>(null)
   const storedCount = sourceSegments(version).length
   const anyEditable = rows.some((row) => {
     const locks = dateLocks(row.storedFrom ?? "", row.storedUntil)
@@ -42,6 +55,7 @@ export function EffectiveDatesForm({
   const showSave = anyEditable || rows.length !== storedCount
 
   function addPeriod() {
+    setOverlaps(null)
     setRows((current) => {
       const last = current.at(-1)
       const instant = last?.untilInput ? istInstant(last.untilInput) : null
@@ -51,16 +65,29 @@ export function EffectiveDatesForm({
     })
   }
 
-  async function submit(event: FormEvent) {
-    event.preventDefault()
+  function updateRow(key: string, patch: Partial<PeriodRow>) {
+    setOverlaps(null)
+    setRows((current) => current.map((item) => (item.key === key ? { ...item, ...patch } : item)))
+  }
+
+  async function submit(event?: FormEvent, confirmed = false) {
+    event?.preventDefault()
     if (!showSave || saving) return
     const edited = editEffectiveSegments({ segments: rows })
     if (!edited.body) {
+      setOverlaps(null)
       setError(new ApiError("The dates were not saved.", edited.errors))
+      return
+    }
+    const hits = overlappingWindows(periodsOfSubmission(edited.body), versions, version.version)
+    if (hits.length > 0 && !confirmed) {
+      setError(null)
+      setOverlaps(hits)
       return
     }
     setSaving(true)
     setError(null)
+    setOverlaps(null)
     try {
       await api.changeDates(ruleKey, version.version, edited.body)
       onSaved(await api.getRule(ruleKey))
@@ -75,6 +102,15 @@ export function EffectiveDatesForm({
     <section className="sheet stack">
       <h2>Edit periods</h2>
       {error ? <Banner tone="error" title={error.message} details={error.details} /> : null}
+      {overlaps && overlaps.length > 0 ? (
+        <OverlapConfirm
+          hits={overlaps}
+          pending={saving}
+          confirmLabel="Change dates"
+          onConfirm={() => void submit(undefined, true)}
+          onCancel={() => setOverlaps(null)}
+        />
+      ) : null}
       <form className="stack" noValidate onSubmit={(event) => void submit(event)}>
         <div className="period-list">
           {rows.map((row, index) => {
@@ -88,7 +124,10 @@ export function EffectiveDatesForm({
                     <button
                       type="button"
                       className="ghost"
-                      onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}
+                      onClick={() => {
+                        setOverlaps(null)
+                        setRows((current) => current.filter((item) => item.key !== row.key))
+                      }}
                     >
                       Remove
                     </button>
@@ -105,11 +144,7 @@ export function EffectiveDatesForm({
                       value={row.fromInput}
                       disabled={locks.fromLocked}
                       aria-describedby="effective-dates-note"
-                      onChange={(event) =>
-                        setRows((current) =>
-                          current.map((item) => (item.key === row.key ? { ...item, fromInput: event.target.value } : item)),
-                        )
-                      }
+                      onChange={(event) => updateRow(row.key, { fromInput: event.target.value })}
                     />
                   </label>
                   <label className="field" htmlFor={`version-edit-until-${index}`}>
@@ -122,11 +157,7 @@ export function EffectiveDatesForm({
                       value={row.untilInput}
                       disabled={locks.untilLocked}
                       aria-describedby="effective-dates-note"
-                      onChange={(event) =>
-                        setRows((current) =>
-                          current.map((item) => (item.key === row.key ? { ...item, untilInput: event.target.value } : item)),
-                        )
-                      }
+                      onChange={(event) => updateRow(row.key, { untilInput: event.target.value })}
                     />
                   </label>
                 </div>
@@ -136,8 +167,9 @@ export function EffectiveDatesForm({
         </div>
         <p className="note" id="effective-dates-note">
           Times are India Standard Time, to the minute. A start or end already before the current minute cannot change.
-          The end must be later than the start. A period that sits strictly inside another version splits that version,
-          so the earlier version resumes when this period ends. A partial overlap is rejected.
+          The end must be later than the start. If these dates overlap another version, that version's dates are adjusted
+          after you confirm the overlapped window. A period strictly inside another version splits it, so the earlier
+          version resumes when this period ends.
         </p>
         <div className="actions">
           <button type="button" className="ghost" onClick={addPeriod}>
@@ -146,7 +178,10 @@ export function EffectiveDatesForm({
           <button
             type="button"
             className="ghost"
-            onClick={() => setRows((current) => [...current, rowFrom(oneDayPeriod(), false)])}
+            onClick={() => {
+              setOverlaps(null)
+              setRows((current) => [...current, rowFrom(oneDayPeriod(), false)])
+            }}
           >
             Add one-day period
           </button>

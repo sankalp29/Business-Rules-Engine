@@ -67,7 +67,15 @@ public class RuleExecutionEngine {
                 inserted.add(insert(kieBase, session, types, input));
             }
             List<FactSnapshot> before = snapshot(kieBase, types, inserted);
-            boolean fired = session.fireAllRules(1) > 0;
+            // Rules stored before branches moved into then declared this global and counted a fire
+            // only when an arm ran. New rules leave the global out, so a matching when is a fire.
+            boolean tracksBranches = drl.contains("global java.util.List branchHits;");
+            List<Integer> branchHits = new ArrayList<>();
+            if (tracksBranches) {
+                session.setGlobal("branchHits", branchHits);
+            }
+            boolean activated = session.fireAllRules(1) > 0;
+            boolean fired = activated && (!tracksBranches || !branchHits.isEmpty());
             List<FactSnapshot> after = snapshot(kieBase, types, inserted);
             Reasoning reasoning = reasoningBuilder.describe(definition.name(), fired, before, after);
             return new ExecutionResponse(

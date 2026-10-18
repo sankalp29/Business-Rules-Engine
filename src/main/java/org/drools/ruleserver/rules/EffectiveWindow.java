@@ -36,8 +36,10 @@ import java.util.regex.Pattern;
  * that was stored before versions existed: that original version stays active until another
  * version starts. A date without a time is an India Standard Time calendar day.
  * {@code effectiveFrom} is 00:00 of that day and {@code effectiveUntil} is 23:59 of that day.
- * Both instants are a whole minute. {@code effectiveUntil} is after {@code effectiveFrom}.
- * A timestamp belongs to the window when its minute does.
+ * Both instants are a whole minute. {@code effectiveUntil} is not before {@code effectiveFrom}.
+ * A window the user submits has to end after it starts. A single minute can remain after another
+ * version takes the minutes around it: that window has the same start and end. A timestamp
+ * belongs to the window when its minute does.
  */
 public record EffectiveWindow(Instant from, Instant until) {
 
@@ -52,7 +54,7 @@ public record EffectiveWindow(Instant from, Instant until) {
         if (from == null) {
             throw new IllegalArgumentException("effectiveFrom is required");
         }
-        if (until != null && !until.isAfter(from)) {
+        if (until != null && until.isBefore(from)) {
             throw new IllegalArgumentException("effectiveUntil must be after effectiveFrom");
         }
     }

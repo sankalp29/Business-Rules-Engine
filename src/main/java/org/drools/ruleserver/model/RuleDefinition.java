@@ -32,6 +32,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * is read; a schema already stored, including an empty list, is returned unchanged.
  * Effective dates and segments are stored on the version, not in this document. They are ignored
  * here so a definition file that also carries them can still be read as a rule body.
+ * {@code when} is the gate. {@code then} runs only after that gate matches. A then block may hold
+ * assignments and if / else-if / else branches for its fact.
  */
 @JsonIgnoreProperties({ "facts", "effectiveFrom", "effectiveUntil", "segments" })
 public record RuleDefinition(
