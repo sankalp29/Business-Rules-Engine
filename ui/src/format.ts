@@ -97,6 +97,14 @@ export function istInputValue(value: Date | string | null | undefined): string {
   return `${part(parts, "year")}-${part(parts, "month")}-${part(parts, "day")}T${hour}:${part(parts, "minute")}:${part(parts, "second")}`
 }
 
+/** `HH:mm` in India Standard Time. */
+export function istClock(value: Date): string {
+  if (Number.isNaN(value.getTime())) return ""
+  const parts = IST_PARTS.formatToParts(value)
+  const hour = part(parts, "hour") === "24" ? "00" : part(parts, "hour")
+  return `${hour}:${part(parts, "minute")}`
+}
+
 export function istCalendarDate(value: Date): { year: number; month: number; day: number } | null {
   if (Number.isNaN(value.getTime())) return null
   const parts = IST_PARTS.formatToParts(value)

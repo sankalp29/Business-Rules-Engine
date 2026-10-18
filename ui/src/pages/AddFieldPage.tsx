@@ -3,7 +3,6 @@ import { Link, useSearchParams } from "react-router-dom"
 import { ApiError, api } from "../api"
 import { Banner } from "../components/Banner"
 import { FieldDraftEditor } from "../components/FieldDraftEditor"
-import { FieldLines } from "../components/FieldLines"
 import { PageHead } from "../components/PageHead"
 import { emptyField, fieldErrors, fieldToJson, type FieldDraft } from "../drafts"
 import { useTypes } from "../hooks"
@@ -98,9 +97,18 @@ export function AddFieldPage() {
               </button>
             </div>
           </form>
-          <aside className="sheet roster">
-            <h2>{selected ? selected.name : "Current fields"}</h2>
-            {selected ? <FieldLines fields={selected.fields} /> : <p className="note">Choose a type to see its fields.</p>}
+          <aside className="sheet stack">
+            <h2>{selected ? selected.name : "Type"}</h2>
+            {selected ? (
+              <>
+                <p className="quiet">
+                  {selected.fields?.length ?? 0} {selected.fields?.length === 1 ? "field" : "fields"}
+                </p>
+                <Link to={`/types/${encodeURIComponent(selected.name)}`}>Open {selected.name}</Link>
+              </>
+            ) : (
+              <p className="note">Choose a type to see its fields.</p>
+            )}
           </aside>
         </div>
       ) : null}

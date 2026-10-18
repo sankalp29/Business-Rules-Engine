@@ -3,7 +3,6 @@ import { Link } from "react-router-dom"
 import { ApiError, api } from "../api"
 import { Banner } from "../components/Banner"
 import { FieldDraftEditor } from "../components/FieldDraftEditor"
-import { FieldLines } from "../components/FieldLines"
 import { PageHead } from "../components/PageHead"
 import { emptyField, fieldErrors, fieldToJson, type FieldDraft } from "../drafts"
 import { useTypes } from "../hooks"
@@ -55,8 +54,9 @@ export function CreateTypePage() {
       {error ? <Banner tone="error" title={error.message} details={error.details} /> : null}
       {notice ? <Banner tone="ok" title={notice} /> : null}
       {savedName ? (
-        <p>
-          <Link to="/fields/new">Add a field to a saved type</Link>
+        <p className="actions">
+          <Link to={`/types/${encodeURIComponent(savedName)}`}>Open {savedName}</Link>
+          <Link to={`/fields/new?type=${encodeURIComponent(savedName)}`}>Add a field</Link>
         </p>
       ) : null}
       {problems.length > 0 ? <Banner tone="error" title="The type was not saved." details={problems} /> : null}
@@ -101,10 +101,10 @@ export function CreateTypePage() {
           {loading ? <p className="note">Loading types…</p> : null}
           {!loading && (types ?? []).length === 0 ? <p className="note">None yet.</p> : null}
           {(types ?? []).map((type) => (
-            <div key={type.name} className="roster-item">
-              <h3>{type.name}</h3>
-              <FieldLines fields={type.fields} />
-            </div>
+            <Link key={type.name} className="saved-type" to={`/types/${encodeURIComponent(type.name)}`}>
+              <span>{type.name}</span>
+              {type.description ? <span className="quiet">{type.description}</span> : null}
+            </Link>
           ))}
         </aside>
       </div>

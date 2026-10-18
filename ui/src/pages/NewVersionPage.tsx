@@ -4,6 +4,7 @@ import { ApiError, api } from "../api"
 import { Banner } from "../components/Banner"
 import { PageHead } from "../components/PageHead"
 import { PeriodFields } from "../components/PeriodFields"
+import { VersionCalendar } from "../components/VersionCalendar"
 import { ThenBlockEditor, WhenBlockEditor } from "../components/WhenThenEditors"
 import {
   buildRule,
@@ -16,7 +17,7 @@ import {
   type RuleDraft,
   type WhenDraft,
 } from "../drafts"
-import { formatSchedule, ruleKey } from "../format"
+import { ruleKey } from "../format"
 import { useTypes } from "../hooks"
 import { catalogOf, expandLeaves, type RuleResponse } from "../model"
 
@@ -163,22 +164,10 @@ export function NewVersionPage() {
       {error ? <Banner tone="error" title={error.message} details={error.details} /> : null}
       {loading ? <p className="note">Loading types…</p> : null}
       {problems.length > 0 ? <Banner tone="error" title="The version was not saved." details={problems} /> : null}
-      <section className="sheet stack">
-        <h2>Versions already saved</h2>
-        {versions.length === 0 ? <p className="note">No versions yet.</p> : null}
-        <ul className="windows">
-          {versions.map((version) => (
-            <li key={version.version}>
-              <span className="mono">{version.version}</span>
-              <span>{formatSchedule(version)}</span>
-              {version.active ? <span className="pill">Active</span> : null}
-            </li>
-          ))}
-        </ul>
-        <p className="note">
-          A period that sits strictly inside a version above splits that version, so the earlier version resumes after it. A partial overlap, or a shared minute, is rejected. Times are India Standard Time, to the minute. The start and the end cannot be before the current minute, and the end must be later than the start.
-        </p>
-      </section>
+      {versions.length === 0 ? <p className="note">No versions yet.</p> : <VersionCalendar versions={versions} ruleKey={ruleKey(rule)} />}
+      <p className="note">
+        A period that sits strictly inside another version splits that version, so the earlier version resumes after it. A partial overlap is rejected.
+      </p>
       <div className="author">
         <form className="stack" noValidate onSubmit={(event) => void submit(event)}>
           <section className="sheet stack">

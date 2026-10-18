@@ -1,24 +1,18 @@
 import { Link } from "react-router-dom"
 import { Banner } from "../components/Banner"
-import { FieldLines } from "../components/FieldLines"
 import { PageHead } from "../components/PageHead"
 import { useTypes } from "../hooks"
 
 export function FieldsPage() {
   const { types, error, loading } = useTypes()
   const ready = types ?? []
-  const fieldCount = ready.reduce((sum, type) => sum + (type.fields?.length ?? 0), 0)
 
   return (
     <div className="stack page">
       <PageHead
         eyebrow="Catalog"
         title="Fields"
-        lede={
-          types
-            ? `${fieldCount} saved ${fieldCount === 1 ? "field" : "fields"} across ${ready.length} ${ready.length === 1 ? "type" : "types"}.`
-            : "Fields already saved on each type."
-        }
+        lede={types ? "Add a field to a saved type. Open the type to read its fields." : "Fields belong to a type."}
         action={
           ready.length > 0 ? (
             <Link className="primary link-button" to="/fields/new">
@@ -28,7 +22,7 @@ export function FieldsPage() {
         }
       />
       {error ? <Banner tone="error" title={error.message} details={error.details} /> : null}
-      {loading ? <p className="note">Loading fields…</p> : null}
+      {loading ? <p className="note">Loading types…</p> : null}
       {!loading && !error && ready.length === 0 ? (
         <section className="sheet stack">
           <h2>No types yet</h2>
@@ -39,14 +33,16 @@ export function FieldsPage() {
         </section>
       ) : null}
       {ready.length > 0 ? (
-        <div className="rule-list">
+        <div className="type-grid">
           {ready.map((type) => (
-            <article key={type.name} className="sheet">
-              <header className="sheet-head">
+            <article key={type.name} className="sheet type-card">
+              <Link className="type-card-link" to={`/types/${encodeURIComponent(type.name)}`}>
                 <h2>{type.name}</h2>
-                <Link to={`/fields/new?type=${encodeURIComponent(type.name)}`}>Add field</Link>
-              </header>
-              <FieldLines fields={type.fields} />
+                {type.description ? <p>{type.description}</p> : null}
+              </Link>
+              <Link className="text-action" to={`/fields/new?type=${encodeURIComponent(type.name)}`}>
+                Add field
+              </Link>
             </article>
           ))}
         </div>

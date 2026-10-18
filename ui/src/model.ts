@@ -15,11 +15,13 @@ export type ScalarName = (typeof SCALAR_TYPES)[number]
 export type FieldDecl = {
   name: string
   type?: string | null
+  description?: string | null
   fields?: FieldDecl[] | null
 }
 
 export type TypeResponse = {
   name: string
+  description?: string | null
   fields: FieldDecl[] | null
   createdAt?: string
 }

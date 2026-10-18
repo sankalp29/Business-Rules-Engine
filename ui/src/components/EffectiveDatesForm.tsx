@@ -73,7 +73,7 @@ export function EffectiveDatesForm({
 
   return (
     <section className="sheet stack">
-      <h2>Effective dates</h2>
+      <h2>Edit periods</h2>
       {error ? <Banner tone="error" title={error.message} details={error.details} /> : null}
       <form className="stack" noValidate onSubmit={(event) => void submit(event)}>
         <div className="period-list">

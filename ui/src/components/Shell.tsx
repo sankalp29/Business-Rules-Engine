@@ -2,7 +2,7 @@ import type { ReactNode } from "react"
 import { NavLink } from "react-router-dom"
 
 const links = [
-  { to: "/types", label: "Type" },
+  { to: "/types", label: "Types" },
   { to: "/fields", label: "Fields" },
   { to: "/rules", label: "Rules" },
 ]
@@ -18,7 +18,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <span className="brand-mark">Clause</span>
           <span className="brand-sub">Rule desk</span>
         </div>
-        <p className="spine-note">Read a saved rule and its versions, or create a type, field, or rule.</p>
+        <p className="spine-note">Types, rules, and the version in effect today.</p>
         <nav className="nav" aria-label="Sections">
           {links.map((link) => (
             <NavLink key={link.to} to={link.to}>
@@ -26,7 +26,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </NavLink>
           ))}
         </nav>
-        <p className="spine-foot">Talks to the rule engine</p>
+        <p className="spine-foot">Rule engine</p>
       </aside>
       <main id="content" className="main">
         <div className="frame">{children}</div>

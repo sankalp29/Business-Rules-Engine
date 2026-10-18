@@ -1,19 +1,24 @@
+import { useState } from "react"
 import { Link } from "react-router-dom"
 import { Banner } from "../components/Banner"
-import { FieldLines } from "../components/FieldLines"
 import { PageHead } from "../components/PageHead"
 import { useTypes } from "../hooks"
 
 export function TypesPage() {
   const { types, error, loading } = useTypes()
+  const [query, setQuery] = useState("")
   const count = types?.length ?? 0
+  const shown = (types ?? []).filter((type) => {
+    const haystack = [type.name, type.description ?? ""].join(" ").toLowerCase()
+    return haystack.includes(query.trim().toLowerCase())
+  })
 
   return (
     <div className="stack page">
       <PageHead
         eyebrow="Catalog"
-        title="Type"
-        lede={types ? `${count} saved ${count === 1 ? "type" : "types"}. A rule names one of these.` : "Facts a rule can name."}
+        title="Types"
+        lede={types ? `${count} saved ${count === 1 ? "type" : "types"}. Open one to see its fields.` : "Facts a rule can name."}
         action={
           <Link className="primary link-button" to="/types/new">
             New type
@@ -29,14 +34,27 @@ export function TypesPage() {
         </section>
       ) : null}
       {types && types.length > 0 ? (
-        <div className="rule-list">
-          {types.map((type) => (
-            <article key={type.name} className="sheet">
-              <h2>{type.name}</h2>
-              <FieldLines fields={type.fields} />
-            </article>
-          ))}
-        </div>
+        <>
+          <label className="field filter" htmlFor="type-filter">
+            <span className="label-text">Find</span>
+            <input
+              id="type-filter"
+              className="control"
+              value={query}
+              placeholder="Name or description"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+          {shown.length === 0 ? <p className="note">No type matches that search.</p> : null}
+          <div className="type-grid">
+            {shown.map((type) => (
+              <Link key={type.name} className="sheet type-card" to={`/types/${encodeURIComponent(type.name)}`}>
+                <h2>{type.name}</h2>
+                {type.description ? <p>{type.description}</p> : null}
+              </Link>
+            ))}
+          </div>
+        </>
       ) : null}
     </div>
   )

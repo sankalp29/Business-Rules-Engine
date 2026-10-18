@@ -3,7 +3,7 @@ import { Link } from "react-router-dom"
 import { ApiError, api } from "../api"
 import { Banner } from "../components/Banner"
 import { PageHead } from "../components/PageHead"
-import { activeVersionOf, formatSchedule, formatWhen, latestVersion, ruleKey } from "../format"
+import { activeVersionOf, formatWhen, latestVersion, ruleKey } from "../format"
 import type { RuleDefinition, RuleResponse } from "../model"
 
 export function RulesPage() {
@@ -41,12 +41,12 @@ export function RulesPage() {
   return (
     <div className="stack page">
       <PageHead
-        eyebrow="Docket"
+        eyebrow="Desk"
         title="Rules"
         lede={
           rules
-            ? `${rules.length} saved ${rules.length === 1 ? "rule" : "rules"}. Open one to read its versions, then run the version that is active now.`
-            : "Open a rule to read its versions, then run the version that is active now."
+            ? `${rules.length} saved ${rules.length === 1 ? "rule" : "rules"}. Open one to see which version runs on which day.`
+            : "Open a rule to see which version runs on which day."
         }
         action={
           <Link className="primary link-button" to="/rules/new">
@@ -106,8 +106,8 @@ function versionLine(rule: RuleResponse): string {
   const count = rule.versions?.length ?? 0
   const noun = `${count} ${count === 1 ? "version" : "versions"}`
   const active = activeVersionOf(rule)
-  if (!active) return `${noun} · none active`
-  return `${noun} · ${active.version} active · ${formatSchedule(active)}`
+  if (!active) return `${noun} · none active now`
+  return `${noun} · ${active.version} active now`
 }
 
 function summaryDefinition(rule: RuleResponse): RuleDefinition | null {
