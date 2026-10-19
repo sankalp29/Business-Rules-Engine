@@ -81,7 +81,10 @@ export function RuleFrame() {
         <PageHead
           eyebrow={rule.code || "Rule"}
           title={rule.name || "Untitled rule"}
-          lede={rule.description?.trim() || (requested ? "" : "Versions of this rule, and when each one is effective.")}
+          lede={
+            activeVersionOf(rule)?.description?.trim() ||
+            (requested ? "" : "Versions of this rule, and when each one is effective.")
+          }
           action={
             <Link className="ghost link-button" to={newVersionHref(encoded, focus)}>
               New version

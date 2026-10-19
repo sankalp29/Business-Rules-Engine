@@ -25,7 +25,7 @@ HTTP service that stores fact types, authors a rule as JSON when/then blocks, co
 
 This module is standalone. It is not part of the Drools reactor build. Run the commands below from `rule-engine-server/`.
 
-A type is defined once, with its fields. A rule names those types in its `when` blocks. The server does not store a `facts` list on the rule. At authoring time it computes `inputSchema` and `outputSchema`: a field a condition reads is in both, and a field a `then` assignment sets is in `outputSchema`. The generated DRL still declares the full type, so a later edit to a type does not change a saved rule, and execution still accepts every field of that type. A `when` condition is an object: a field, an operator, and either a value or another field. Several conditions combine with `and` and `or`, and those groups can be nested. The value's JSON type must match the field type. The `then` assignments set scalar fields, including fields nested inside another fact. Execution compares every fact field before and after the rule runs and returns a `reasoning` string that names each field that changed.
+A type is defined once, with its fields. A rule names those types in its `when` blocks. The server does not store a `facts` list on the rule. At authoring time it computes `inputSchema` and `outputSchema`: a field a condition reads is in both, and a field a `then` assignment sets is in `outputSchema`. The generated DRL still declares the full type, so a later edit to a type does not change a saved rule, and execution still accepts every field of that type. A `when` condition is an object: a field, an operator, and either a value or another field. Several conditions combine with `and` and `or`, and those groups can be nested. The value's JSON type must match the field type. The `then` assignments set scalar fields, including fields nested inside another fact. Execution compares every fact field before and after the rule runs and returns `reasoning`, an array of plain-text sentences. Each sentence names one field that changed and every `when` condition that evaluated true for that write, from the top-level `when` through the branch arm that performed it.
 
 `expression` assignments are compiled as rule code. Expose the authoring API only to trusted authors.
 
@@ -127,7 +127,7 @@ An inline object is declared as `{Parent}_{field}` when a rule is compiled, for 
 
 `POST /api/rules`
 
-`code` is the rule's identifier. It must start with a letter and contain only letters, digits, underscores, or hyphens, up to 64 characters. It cannot be all digits, so it never hides a numeric id. `name` is the rule's title. Both stay the same on every version. `when[].type` names a type that is already defined. A `facts` array on the request is ignored. `inputSchema` and `outputSchema` sent by the client are ignored too; the server computes both and stores those.
+`code` is the rule's identifier. It must start with a letter and contain only letters, digits, underscores, or hyphens, up to 64 characters. It cannot be all digits, so it never hides a numeric id. `name` is the rule's title. Both stay the same on every version. `when[].type` names a type that is already defined. Each type is used in at most one when block. `binding` is not chosen: it is `$` plus the type name with a lower-case first letter, so `Customer` is `$customer`. A second `Customer` block is rejected with `when[1].type Customer is already used`. A different binding is rejected with `when[0].binding must be $customer`. A `facts` array on the request is ignored. `inputSchema` and `outputSchema` sent by the client are ignored too; the server computes both and stores those.
 
 Creating a rule saves version `v1`. `effectiveFrom` and `effectiveUntil` are required. Each value is an India Standard Time calendar date (`YYYY-MM-DD`, inclusive) or an ISO-8601 timestamp (inclusive). A timestamp with no offset is read as India Standard Time. Precision is one minute: a second or a fraction is rejected with `effectiveFrom must be a whole minute` or `effectiveUntil must be a whole minute`. A calendar date uses 00:00 IST for `effectiveFrom` and 23:59 IST for `effectiveUntil`. The current minute is allowed. A minute before the current minute is rejected for either bound (`effectiveFrom cannot be before the current time`, `effectiveUntil cannot be before the current time`). `effectiveUntil` must be after `effectiveFrom`. This version runs only inside that window.
 
@@ -178,29 +178,42 @@ Response `201 Created`, with `Location: /api/rules/senior-discount-without-types
   "id": 1,
   "code": "senior-discount-without-types",
   "name": "Apply senior discount",
-  "description": "Customers aged 65 or older receive a senior discount",
+  "createdAt": "2026-10-17T12:00:00Z",
   "activeVersion": "v1",
-  "definition": {
-    "inputSchema": [
-      { "type": "Customer", "fields": [ { "name": "age", "type": "int" } ] }
-    ],
-    "outputSchema": [
-      {
-        "type": "Customer",
-        "fields": [
-          { "name": "age", "type": "int" },
-          { "name": "discount", "type": "double" },
-          { "name": "segment", "type": "String" }
+  "versions": [
+    {
+      "id": 10,
+      "versionNumber": 1,
+      "version": "v1",
+      "description": "Customers aged 65 or older receive a senior discount",
+      "effectiveFrom": "2026-10-17T18:30:00Z",
+      "effectiveUntil": "2099-12-31T18:29:00Z",
+      "active": true,
+      "definition": {
+        "inputSchema": [
+          { "type": "Customer", "fields": [ { "name": "age", "type": "int" } ] }
+        ],
+        "outputSchema": [
+          {
+            "type": "Customer",
+            "fields": [
+              { "name": "age", "type": "int" },
+              { "name": "discount", "type": "double" },
+              { "name": "segment", "type": "String" }
+            ]
+          }
         ]
-      }
-    ]
-  },
-  "drl": "package rules.dynamic\n\n...",
-  "createdAt": "2026-10-17T12:00:00Z"
+      },
+      "drl": "package rules.dynamic\n\n...",
+      "createdAt": "2026-10-17T12:00:00Z",
+      "stage": "DRAFT",
+      "editable": true
+    }
+  ]
 }
 ```
 
-`code` and `name` are returned on the rule. `description`, `definition`, and `drl` are the version that is active at the time of the response, and `activeVersion` is its token, such as `v1`. When no version is active those three fields are null. `versions` lists every version. The `definition` object is that version's body: `salience`, `inputSchema`, `outputSchema`, `when`, and `then`. `inputSchema` lists the fields the conditions read, including a `valueField` such as `$customer.name`. `outputSchema` lists those same fields plus the fields the assignments set. Nested fields stay nested, and only the used children are included. For `move-city`, both schemas contain `Customer.address.city` and omit `zip`. Field order follows the type. Fact order follows the first `when` block that uses the type. A type with no selected fields is omitted. The DRL, not the schema, declares every field of each `when` type, including `name` and `address`.
+`id`, `code`, `name`, and `createdAt` belong to the rule and are the same on every version. `activeVersion` is the token of the single version whose window contains the current minute, such as `v1`. It is null when no version is active or more than one is. `versions` lists every version. Each version carries its own `description`, `definition`, `drl`, effective dates, `segments`, `active`, and approval fields (`stage`, `stageLabel`, `editable`, `workflowVersion`, `stages`, `returnedFrom`). A version does not repeat `code` or `name`. `GET /api/rules/{code}/versions` and `GET /api/rules/{code}/versions/v1` return that same version object. The `definition` object is that version's body: `salience`, `inputSchema`, `outputSchema`, `when`, and `then`. `inputSchema` lists the fields the conditions read, including a `valueField` such as `$customer.name`. `outputSchema` lists those same fields plus the fields the assignments set. Nested fields stay nested, and only the used children are included. For `move-city`, both schemas contain `Customer.address.city` and omit `zip`. Field order follows the type. Fact order follows the first `when` block that uses the type. A type with no selected fields is omitted. The DRL, not the schema, declares every field of each `when` type, including `name` and `address`.
 
 `id` is still the database id. New rules are fetched and executed by `code`. A rule saved before `code` existed has a null `code` and remains available at `/api/rules/{id}`. Both forms work for every rule: a code is tried first, and an all-digit key is then read as an id.
 
@@ -410,7 +423,7 @@ Request:
 }
 ```
 
-Response `200 OK` when the rule fires:
+Response `200 OK` when the rule fires. `ruleId` and `code` name the rule. `version` is the token of the version that ran. The version body is not repeated here:
 
 ```json
 {
@@ -418,7 +431,10 @@ Response `200 OK` when the rule fires:
   "code": "senior-discount-without-types",
   "version": "v1",
   "fired": true,
-  "reasoning": "Rule Apply senior discount fired. Set Customer.discount to 0.2 (was 0.0). Set Customer.segment to SENIOR (was STANDARD).",
+  "reasoning": [
+    "Customer.discount=0.2 because age >= 65",
+    "Customer.segment=SENIOR because age >= 65"
+  ],
   "inputData": [
     {
       "type": "Customer",
@@ -461,7 +477,9 @@ The same call with age 30 (`examples/execute-no-match.json`) does not fire:
 {
   "code": "senior-discount-without-types",
   "fired": false,
-  "reasoning": "Rule Apply senior discount did not fire. No fields were changed.",
+  "reasoning": [
+    "Rule Apply senior discount did not fire. No fields were changed."
+  ],
   "modifiedData": [
     { "type": "Customer", "values": {} }
   ]
@@ -476,13 +494,13 @@ curl -s -X POST http://localhost:8080/api/rules/move-city/execute \
   --data @examples/execute-move-city.json
 ```
 
-That response sets `address.city` from `London` to `Pune`. `reasoning` is `Rule Move customer to Pune fired. Set Customer.address.city to Pune (was London).` `modifiedData` nests the change under `address.city` as `{ "previousValue": "London", "newValue": "Pune" }`.
+That response sets `address.city` from `London` to `Pune`. `reasoning` is `["Customer.address.city=Pune because address.city=London"]`. `modifiedData` nests the change under `address.city` as `{ "previousValue": "London", "newValue": "Pune" }`.
 
 The engine fires a rule at most once, so the response uses `fired` and does not repeat the rule name or a firing count.
 
 `inputData`, `outputData`, and `modifiedData` list the same facts in the same order. Every item has `type` and `values`. In `inputData` and `outputData`, each value is the field value or a nested object. In `modifiedData`, a changed scalar is `{ "previousValue", "newValue" }`, nested until the leaf that changed. An empty `values` object means that fact did not change. Slashes stay in these values.
 
-`reasoning` is plain text. It does not wrap names or values in quotes, and it omits `\` and `/` so the string never contains either character. When several facts share a type, the reasoning labels them `Customer[1]`, `Customer[2]`, in request order.
+Each `reasoning` entry is plain text. It does not wrap names or values in quotes, and it omits `\` and `/` so the text never contains either character. `==` renders as `=` with no spaces. Other operators keep spaces. True conditions join with ` & `. An `and` that matched includes every child. An `or` keeps the first true child. A branch write repeats the top-level `when` and the arm that ran. When several facts share a type, the reasoning labels them `Customer[1]`, `Customer[2]`, in request order.
 
 A value sent for the wrong data type is rejected. `"age": "seventy"` returns 400 with `must be a JSON number`. `"address": { "city": 12 }` returns 400 with `must be a JSON string`. `"salary": 1` returns 400 because `salary` is not a field of Customer. A condition has the same check: `{ "field": "segment", "operator": ">=", "value": 65 }` returns 400 because `>=` is not allowed for String. A missing field keeps its default and is not an error.
 

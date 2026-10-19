@@ -4,12 +4,14 @@ export function ruleKey(rule: Pick<RuleResponse, "code" | "id">): string {
   return rule.code || String(rule.id)
 }
 
+/** The request shape for the version that is active now. Code and name come from the rule. */
 export function constructionDocument(rule: RuleResponse): Record<string, unknown> {
-  const definition = rule.definition ?? {}
+  const version = activeVersionOf(rule)
+  const definition = version?.definition ?? {}
   const document: Record<string, unknown> = {}
   if (rule.code) document.code = rule.code
   if (rule.name) document.name = rule.name
-  if (rule.description) document.description = rule.description
+  if (version?.description) document.description = version.description
   if (definition.salience !== null && definition.salience !== undefined) document.salience = definition.salience
   document.when = definition.when ?? []
   document.then = definition.then ?? []

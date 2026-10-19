@@ -30,7 +30,6 @@ export function RulesPage() {
     const haystack = [
       rule.name,
       rule.code,
-      rule.description,
       ...(rule.versions ?? []).flatMap((version) => [version.version, version.description]),
     ]
       .join(" ")
@@ -96,10 +95,13 @@ export function RulesPage() {
   )
 }
 
+/** The active version's description, or the latest version's when none is active. */
 function cardDescription(rule: RuleResponse): string | null {
-  if (rule.description) return rule.description
-  if (rule.activeVersion) return null
-  return latestVersion(rule)?.description ?? null
+  if (rule.activeVersion) {
+    const active = (rule.versions ?? []).find((version) => version.version === rule.activeVersion)
+    return active?.description?.trim() || null
+  }
+  return latestVersion(rule)?.description?.trim() || null
 }
 
 

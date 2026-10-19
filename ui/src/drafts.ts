@@ -124,18 +124,18 @@ export function emptyAssignment(): AssignmentDraft {
 
 export type WhenDraft = {
   id: string
+  /** Derived from `type` (`Customer` becomes `$customer`). Authors never choose it. */
   binding: string
-  bindingTouched: boolean
   type: string
   root: ConditionDraft
 }
 
 export function emptyWhen(type = ""): WhenDraft {
+  const named = type.trim()
   return {
     id: uid(),
-    binding: bindingFor(type),
-    bindingTouched: false,
-    type,
+    binding: named ? bindingFor(named) : "",
+    type: named,
     root: emptyComparison(),
   }
 }
@@ -593,14 +593,21 @@ export type ValueFieldOption = {
   label: string
 }
 
-export function valueFieldOptions(currentLeaves: Leaf[], earlier: { binding: string; leaves: Leaf[] }[]): ValueFieldOption[] {
+export function valueFieldOptions(
+  currentLeaves: Leaf[],
+  earlier: { binding: string; type: string; leaves: Leaf[] }[],
+): ValueFieldOption[] {
   const options = currentLeaves.map((leaf) => ({ value: leaf.path, type: leaf.type, label: leaf.path }))
   for (const block of earlier) {
     const binding = block.binding.trim()
     if (!binding) continue
+    const typeLabel = block.type.trim() || binding.slice(1)
     for (const leaf of block.leaves) {
-      const value = `${binding}.${leaf.path}`
-      options.push({ value, type: leaf.type, label: value })
+      options.push({
+        value: `${binding}.${leaf.path}`,
+        type: leaf.type,
+        label: `${typeLabel}.${leaf.path}`,
+      })
     }
   }
   return options
@@ -611,7 +618,7 @@ export function compatibleFields(options: ValueFieldOption[], type: string | und
   return options.filter((option) => sameFamily(type, option.type))
 }
 
-/** Type name, or "Customer 1" when the same type is bound more than once. A fact with no type is "Fact". */
+/** Type name. A stored rule that already repeats a type is numbered "Customer 1". A fact with no type is "Fact". */
 export function factLabels(facts: readonly { binding: string; type: string }[]): Map<string, string> {
   const counts = new Map<string, number>()
   let untyped = 0
@@ -645,8 +652,8 @@ export function factLabels(facts: readonly { binding: string; type: string }[]):
 }
 
 /**
- * Condition menus for a chain on `binding`.
- * This fact's fields stay local (`age`). Every other fact is `$binding.field`, labelled `Order.total`.
+ * Condition menus for a chain on one fact.
+ * This fact's fields stay local (`age`). Another fact is stored as `$binding.field` and labelled `Order.total`.
  */
 export function chainLeaves(binding: string, whens: readonly WhenDraft[], leavesByWhen: readonly Leaf[][]): Leaf[] {
   const labels = factLabels(whens)
@@ -684,15 +691,6 @@ export function isBlankCondition(node: ConditionDraft): boolean {
   return node.kind === "comparison" && node.field.trim() === ""
 }
 
-export function uniqueBinding(typeName: string, taken: readonly string[]): string {
-  const base = bindingFor(typeName)
-  const used = new Set(taken.map((item) => item.trim()).filter(Boolean))
-  if (!used.has(base)) return base
-  let suffix = 2
-  while (used.has(`${base}${suffix}`)) suffix += 1
-  return `${base}${suffix}`
-}
-
 /** Append an empty if / else-if / else chain to one then block. */
 export function addBranch(draft: RuleDraft, thenId: string): RuleDraft {
   return {
@@ -722,25 +720,25 @@ export function removeBranch(draft: RuleDraft, thenId: string, branchId: string)
 
 export function changeFactType(draft: RuleDraft, id: string, type: string): RuleDraft {
   const when = draft.whens.find((item) => item.id === id)
-  if (!when) return draft
-  const typeChanged = type !== when.type
-  const others = draft.whens.filter((item) => item.id !== id).map((item) => item.binding.trim())
-  const binding = when.bindingTouched ? when.binding : uniqueBinding(type, others)
-  return replaceWhen(draft, id, {
-    ...when,
-    type,
-    binding,
-    root: typeChanged ? emptyComparison() : when.root,
-  })
+  if (!when || type === when.type) return draft
+  return replaceWhen(draft, id, { ...when, type, root: emptyComparison() })
 }
 
 export function replaceWhen(draft: RuleDraft, id: string, nextWhen: WhenDraft): RuleDraft {
   const previous = draft.whens.find((when) => when.id === id)
   if (!previous) return draft
-  let next: RuleDraft = { ...draft, whens: draft.whens.map((when) => (when.id === id ? nextWhen : when)) }
-  if (previous.binding !== nextWhen.binding) next = renameBinding(next, previous.binding, nextWhen.binding)
-  if (previous.type !== nextWhen.type) next = clearFactFields(next, nextWhen.binding.trim())
-  return next
+  const type = nextWhen.type.trim()
+  if (type && draft.whens.some((when) => when.id !== id && when.type === type)) return draft
+  const binding = type ? bindingFor(type) : ""
+  const normalized: WhenDraft = { ...nextWhen, type, binding }
+  let next: RuleDraft = { ...draft, whens: draft.whens.map((when) => (when.id === id ? normalized : when)) }
+  if (previous.binding !== binding) {
+    if (previous.binding && binding) next = renameBinding(next, previous.binding, binding)
+    else if (binding) next = claimBinding(next, binding)
+    else next = forgetBinding(next, previous.binding)
+  }
+  if (previous.type !== type) next = clearFactFields(next, binding || previous.binding)
+  return canonicalize(next)
 }
 
 export function removeWhen(draft: RuleDraft, id: string): RuleDraft {
@@ -751,7 +749,7 @@ export function removeWhen(draft: RuleDraft, id: string): RuleDraft {
   const alive = new Set(whens.map((when) => when.binding))
   const fallback = whens[0]?.binding ?? ""
   const removedBinding = removed.binding.trim()
-  return {
+  return canonicalize({
     ...draft,
     whens,
     thens: draft.thens.map((block) => {
@@ -767,19 +765,104 @@ export function removeWhen(draft: RuleDraft, id: string): RuleDraft {
         ),
       }
     }),
+  })
+}
+
+/** One binding per type: `Customer` is `$customer`. A repeated type keeps its stored binding so the author can change it. */
+function canonicalize(draft: RuleDraft): RuleDraft {
+  let next = draft
+  const taken = new Set<string>()
+  for (const id of draft.whens.map((when) => when.id)) {
+    const when = next.whens.find((item) => item.id === id)
+    if (!when) continue
+    const type = when.type.trim()
+    if (!type) continue
+    const canonical = bindingFor(type)
+    if (taken.has(canonical)) continue
+    taken.add(canonical)
+    if (when.binding === canonical) continue
+    next = renameBinding(next, when.binding, canonical)
+    next = {
+      ...next,
+      whens: next.whens.map((item) => (item.id === id ? { ...item, binding: canonical } : item)),
+    }
+  }
+  return attachOpenThens(next)
+}
+
+/** A then block that has not picked a fact follows the only typed when block. */
+function attachOpenThens(draft: RuleDraft): RuleDraft {
+  const typed = draft.whens.filter((when) => when.type.trim() && when.binding.trim())
+  if (typed.length !== 1) return draft
+  const binding = typed[0].binding
+  if (draft.thens.every((block) => block.binding.trim())) return draft
+  return {
+    ...draft,
+    thens: draft.thens.map((block) => (block.binding.trim() ? block : { ...block, binding })),
+  }
+}
+
+function claimBinding(draft: RuleDraft, binding: string): RuleDraft {
+  return {
+    ...draft,
+    thens: draft.thens.map((block) => (block.binding.trim() ? block : { ...block, binding })),
+  }
+}
+
+function forgetBinding(draft: RuleDraft, binding: string): RuleDraft {
+  const removed = binding.trim()
+  if (!removed) return draft
+  return {
+    ...draft,
+    whens: draft.whens.map((when) => ({ ...when, root: clearConditionBinding(when.root, removed) })),
+    thens: draft.thens.map((block) => {
+      const orphan = block.binding.trim() === removed
+      const next = orphan ? { ...block, binding: "", assignments: block.assignments.map(clearAssignmentField) } : block
+      return {
+        ...next,
+        branches: (next.branches ?? []).map((branch) =>
+          mapBranch(branch, (node) => {
+            const cleared = clearConditionBinding(node, removed)
+            return orphan ? clearLocalCondition(cleared) : cleared
+          }),
+        ),
+      }
+    }),
   }
 }
 
 function renameBinding(draft: RuleDraft, from: string, to: string): RuleDraft {
-  if (!from || from === to) return draft
+  if (!from || !to || from === to) return draft
+  const renameArm = (arm: ArmDraft): ArmDraft => ({
+    ...arm,
+    ...(arm.when ? { when: renameCondition(arm.when, from, to) } : {}),
+    assignments: arm.assignments.map((assignment) => renameAssignment(assignment, from, to)),
+  })
   return {
     ...draft,
+    whens: draft.whens.map((when) => ({ ...when, root: renameCondition(when.root, from, to) })),
     thens: draft.thens.map((block) => ({
       ...block,
       binding: block.binding === from ? to : block.binding,
-      branches: (block.branches ?? []).map((branch) => mapBranch(branch, (node) => renameCondition(node, from, to))),
+      assignments: block.assignments.map((assignment) => renameAssignment(assignment, from, to)),
+      branches: (block.branches ?? []).map((branch) => ({
+        ...branch,
+        ifArm: renameArm(branch.ifArm),
+        elseIf: branch.elseIf.map(renameArm),
+        otherwise: branch.otherwise ? renameArm(branch.otherwise) : null,
+      })),
     })),
   }
+}
+
+function renameAssignment(assignment: AssignmentDraft, from: string, to: string): AssignmentDraft {
+  if (!assignment.expression.includes(from)) return assignment
+  return { ...assignment, expression: renameExpression(assignment.expression, from, to) }
+}
+
+function renameExpression(expression: string, from: string, to: string): string {
+  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return expression.replace(new RegExp(`${escaped}(?![A-Za-z0-9_])`, "g"), to)
 }
 
 /** The fact's fields changed, so drop assignments and comparisons that still name them. */
@@ -956,6 +1039,7 @@ type LogicParts = {
 }
 
 function logicParts(draft: RuleDraft, leavesByWhen: Leaf[][], errors: string[]): LogicParts | null {
+  draft = canonicalize(draft)
   let salience: number | undefined
   if (draft.salience.trim()) {
     const parsed = parseNumber(draft.salience.trim(), true)
@@ -975,16 +1059,14 @@ function logicParts(draft: RuleDraft, leavesByWhen: Leaf[][], errors: string[]):
 }
 
 function serializeWhens(whens: WhenDraft[], leavesByWhen: Leaf[][], errors: string[], allowBlank: boolean): WhenBlock[] {
-  const seen = new Set<string>()
+  const seenTypes = new Set<string>()
   const when: WhenBlock[] = []
   whens.forEach((block, index) => {
     const built = serializeWhen(block, leavesByWhen[index] ?? [], index, errors, allowBlank)
     if (!built) return
     const label = allowBlank ? `Fact ${index + 1}` : `When block ${index + 1}`
-    if (seen.has(built.binding)) {
-      errors.push(allowBlank ? `${label} uses the same name as an earlier fact.` : `${label}: ${built.binding} is already used.`)
-    }
-    seen.add(built.binding)
+    if (built.type && seenTypes.has(built.type)) errors.push(`${label}: ${built.type} is already used.`)
+    else if (built.type) seenTypes.add(built.type)
     when.push(built)
   })
   return when
@@ -1008,7 +1090,7 @@ export function draftFromVersion(
   const whens = (definition?.when ?? []).map(whenFromBlock)
   const whenBlocks = whens.length > 0 ? whens : [emptyWhen()]
   const thens = (definition?.then ?? []).map(thenFromBlock)
-  return {
+  return canonicalize({
     code: rule.code ?? "",
     name: rule.name ?? "",
     description: version.description ?? "",
@@ -1017,14 +1099,13 @@ export function draftFromVersion(
     effectiveUntil: dates.effectiveUntil,
     whens: whenBlocks,
     thens: thens.length > 0 ? thens : [emptyThen(whenBlocks[0]?.binding ?? "")],
-  }
+  })
 }
 
 function whenFromBlock(block: WhenBlock): WhenDraft {
   return {
     id: uid(),
     binding: block.binding,
-    bindingTouched: true,
     type: block.type,
     root: conditionFrom(block.conditions),
   }
@@ -1122,17 +1203,16 @@ function literalDraft(value: unknown): { valueText: string; valueBool: boolean; 
 
 function serializeWhen(block: WhenDraft, leaves: Leaf[], index: number, errors: string[], allowBlank = false): WhenBlock | null {
   const label = allowBlank ? `Fact ${index + 1}` : `When block ${index + 1}`
-  const binding = block.binding.trim()
-  const bindingOk = /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(binding)
-  if (!bindingOk) errors.push(`${label}: binding must look like $customer.`)
-  if (!block.type) errors.push(`${label}: choose a type.`)
-  if (allowBlank && isBlankCondition(block.root)) {
-    if (!bindingOk || !block.type) return null
-    return { binding, type: block.type }
+  const type = block.type.trim()
+  if (!type) {
+    errors.push(`${label}: choose a type.`)
+    return null
   }
+  const binding = block.binding.trim() || bindingFor(type)
+  if (allowBlank && isBlankCondition(block.root)) return { binding, type }
   const conditions = serializeCondition(block.root, leaves, label, errors)
-  if (!bindingOk || !block.type || !conditions) return null
-  return { binding, type: block.type, conditions }
+  if (!conditions) return null
+  return { binding, type, conditions }
 }
 
 function serializeCondition(
@@ -1198,9 +1278,9 @@ function serializeThen(
   label = `Then block ${index + 1}`,
 ): ThenBlock | null {
   const binding = block.binding.trim()
-  const whenIndex = whens.findIndex((when) => when.binding.trim() === binding)
+  const whenIndex = whens.findIndex((when) => when.type.trim() && when.binding.trim() === binding)
   if (whenIndex < 0) {
-    errors.push(`${label}: choose a when binding.`)
+    if (whens.some((when) => when.type.trim())) errors.push(`${label}: choose a type.`)
     return null
   }
   const branchDrafts = block.branches ?? []

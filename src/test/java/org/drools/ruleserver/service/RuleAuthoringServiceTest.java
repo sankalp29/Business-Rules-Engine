@@ -88,9 +88,9 @@ class RuleAuthoringServiceTest {
 
         RuleResponse response = service.get("legacy-string-schema");
 
-        assertThat(response.definition().inputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
+        assertThat(response.versions().get(0).definition().inputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
                 new FieldDeclaration("age", "int"))));
-        assertThat(response.definition().outputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
+        assertThat(response.versions().get(0).definition().outputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
                 new FieldDeclaration("age", "int"),
                 new FieldDeclaration("discount", "double"),
                 new FieldDeclaration("segment", "String"))));
@@ -118,12 +118,12 @@ class RuleAuthoringServiceTest {
 
         List<RuleResponse> responses = service.list();
 
-        assertThat(responses.get(0).definition().inputSchema()).isEmpty();
-        assertThat(responses.get(0).definition().outputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
+        assertThat(responses.get(0).versions().get(0).definition().inputSchema()).isEmpty();
+        assertThat(responses.get(0).versions().get(0).definition().outputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
                 new FieldDeclaration("segment", "String"))));
-        assertThat(responses.get(1).definition().inputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
+        assertThat(responses.get(1).versions().get(0).definition().inputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
                 new FieldDeclaration("name", "String"))));
-        assertThat(responses.get(1).definition().outputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
+        assertThat(responses.get(1).versions().get(0).definition().outputSchema()).containsExactly(new FactDeclaration("Customer", List.of(
                 new FieldDeclaration("age", "int"),
                 new FieldDeclaration("discount", "double"),
                 new FieldDeclaration("segment", "String"))));
@@ -148,7 +148,7 @@ class RuleAuthoringServiceTest {
         when(repository.findById(17L)).thenReturn(Optional.of(entity));
         when(typeService.catalog()).thenReturn(catalog());
 
-        RuleDefinition definition = service.get("17").definition();
+        RuleDefinition definition = service.get("17").versions().get(0).definition();
 
         assertThat(definition.inputSchema()).containsExactly(customer("age", "discount", "segment"));
         assertThat(definition.outputSchema()).containsExactly(customer("age", "discount", "segment"));

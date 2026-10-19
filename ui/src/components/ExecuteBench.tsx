@@ -124,7 +124,11 @@ function ExecutionResult({ result }: { result: ExecutionResponse }) {
           <p className={result.fired ? "stamp fired" : "stamp"}>{result.fired ? "Fired" : "Held"}</p>
           {result.version ? <p className="mono quiet">{result.version}</p> : null}
         </div>
-        <p className="reasoning">{result.reasoning}</p>
+        <div className="reasoning">
+          {result.reasoning.map((line, index) => (
+            <p key={index}>{line}</p>
+          ))}
+        </div>
       </div>
       <div>
         <h3>Changes</h3>

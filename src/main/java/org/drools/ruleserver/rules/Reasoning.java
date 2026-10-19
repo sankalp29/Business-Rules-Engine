@@ -22,5 +22,5 @@ import java.util.List;
 
 import org.drools.ruleserver.model.FactResult;
 
-public record Reasoning(String text, List<FactResult> changes) {
+public record Reasoning(List<String> lines, List<FactResult> changes) {
 }

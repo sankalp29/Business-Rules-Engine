@@ -30,6 +30,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -110,18 +112,24 @@ class RuleApiIT {
         assertThat(id).isPositive();
         assertThat(created.get("code").asText()).isEqualTo("senior-discount-without-types");
         assertThat(created.get("name").asText()).isEqualTo("Apply senior discount");
-        assertThat(created.get("description").asText()).isEqualTo("Customers aged 65 or older receive a senior discount");
-        assertThat(created.get("definition").has("code")).isFalse();
-        assertThat(created.get("definition").has("name")).isFalse();
-        assertThat(created.get("definition").has("description")).isFalse();
-        assertThat(created.get("drl").asText()).contains("rule \"Apply senior discount\"");
-        assertThat(created.get("drl").asText()).contains("declare Address");
-        assertThat(created.get("drl").asText()).contains("address : Address");
-        assertThat(created.get("drl").asText()).contains("setDiscount( 0.2 )");
+        assertThat(created.has("description")).isFalse();
+        assertThat(created.has("definition")).isFalse();
+        assertThat(created.has("drl")).isFalse();
         assertThat(created.get("activeVersion").asText()).isEqualTo("v1");
         assertThat(created.get("versions")).hasSize(1);
-        assertThat(created.get("versions").get(0).get("version").asText()).isEqualTo("v1");
-        assertThat(created.get("versions").get(0).get("versionNumber").asInt()).isEqualTo(1);
+        JsonNode createdVersion = created.get("versions").get(0);
+        assertThat(createdVersion.get("version").asText()).isEqualTo("v1");
+        assertThat(createdVersion.get("versionNumber").asInt()).isEqualTo(1);
+        assertThat(createdVersion.has("code")).isFalse();
+        assertThat(createdVersion.has("name")).isFalse();
+        assertThat(createdVersion.get("description").asText()).isEqualTo("Customers aged 65 or older receive a senior discount");
+        assertThat(createdVersion.get("definition").has("code")).isFalse();
+        assertThat(createdVersion.get("definition").has("name")).isFalse();
+        assertThat(createdVersion.get("definition").has("description")).isFalse();
+        assertThat(createdVersion.get("drl").asText()).contains("rule \"Apply senior discount\"");
+        assertThat(createdVersion.get("drl").asText()).contains("declare Address");
+        assertThat(createdVersion.get("drl").asText()).contains("address : Address");
+        assertThat(createdVersion.get("drl").asText()).contains("setDiscount( 0.2 )");
         assertThat(repository.count()).isEqualTo(before + 1);
         AuthoredRule stored = repository.findById(id).orElseThrow();
         assertThat(stored.getCode()).isEqualTo("senior-discount-without-types");
@@ -141,16 +149,22 @@ class RuleApiIT {
                 .andExpect(jsonPath("$.id").value(id))
                 .andExpect(jsonPath("$.code").value("senior-discount-without-types"))
                 .andExpect(jsonPath("$.name").value("Apply senior discount"))
-                .andExpect(jsonPath("$.definition.code").doesNotExist())
-                .andExpect(jsonPath("$.definition.name").doesNotExist())
-                .andExpect(jsonPath("$.definition.description").doesNotExist())
-                .andExpect(jsonPath("$.definition.facts").doesNotExist())
-                .andExpect(jsonPath("$.definition.inputSchema[0].type").value("Customer"))
-                .andExpect(jsonPath("$.definition.inputSchema[0].fields[0].name").value("age"))
-                .andExpect(jsonPath("$.definition.inputSchema[0].fields.length()").value(1))
-                .andExpect(jsonPath("$.definition.outputSchema[0].fields[0].name").value("age"))
-                .andExpect(jsonPath("$.definition.outputSchema[0].fields[1].name").value("discount"))
-                .andExpect(jsonPath("$.definition.outputSchema[0].fields[2].name").value("segment"));
+                .andExpect(jsonPath("$.description").doesNotExist())
+                .andExpect(jsonPath("$.definition").doesNotExist())
+                .andExpect(jsonPath("$.drl").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].code").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].name").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].description").value("Customers aged 65 or older receive a senior discount"))
+                .andExpect(jsonPath("$.versions[0].definition.code").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].definition.name").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].definition.description").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].definition.facts").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].definition.inputSchema[0].type").value("Customer"))
+                .andExpect(jsonPath("$.versions[0].definition.inputSchema[0].fields[0].name").value("age"))
+                .andExpect(jsonPath("$.versions[0].definition.inputSchema[0].fields.length()").value(1))
+                .andExpect(jsonPath("$.versions[0].definition.outputSchema[0].fields[0].name").value("age"))
+                .andExpect(jsonPath("$.versions[0].definition.outputSchema[0].fields[1].name").value("discount"))
+                .andExpect(jsonPath("$.versions[0].definition.outputSchema[0].fields[2].name").value("segment"));
         mockMvc.perform(get("/api/rules/" + id))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("senior-discount-without-types"));
@@ -167,9 +181,10 @@ class RuleApiIT {
         assertThat(fired.get("ruleId").asLong()).isEqualTo(id);
         assertThat(fired.get("code").asText()).isEqualTo("senior-discount-without-types");
         assertThat(fired.get("version").asText()).isEqualTo("v1");
-        assertThat(fired.get("reasoning").asText()).isEqualTo(
-                "Rule Apply senior discount fired. Set Customer.discount to 0.2 (was 0.0). Set Customer.segment to SENIOR (was STANDARD).");
-        assertThat(fired.get("reasoning").asText()).doesNotContain("\\", "/");
+        assertThat(texts(fired.get("reasoning"))).containsExactly(
+                "Customer.discount=0.2 because age >= 65",
+                "Customer.segment=SENIOR because age >= 65");
+        assertThat(texts(fired.get("reasoning"))).allSatisfy(line -> assertThat(line).doesNotContain("\\", "/"));
         assertThat(fired.has("ruleName")).isFalse();
         assertThat(fired.has("fireCount")).isFalse();
         assertThat(fired.has("firedRules")).isFalse();
@@ -192,7 +207,7 @@ class RuleApiIT {
                 200);
         assertThat(missed.get("fired").asBoolean()).isFalse();
         assertThat(missed.get("code").asText()).isEqualTo("senior-discount-without-types");
-        assertThat(missed.get("reasoning").asText()).isEqualTo(
+        assertThat(texts(missed.get("reasoning"))).containsExactly(
                 "Rule Apply senior discount did not fire. No fields were changed.");
         assertThat(missed.get("inputData").get(0).get("type").asText()).isEqualTo("Customer");
         assertThat(missed.get("outputData").get(0).get("type").asText()).isEqualTo("Customer");
@@ -212,8 +227,8 @@ class RuleApiIT {
                 Files.readString(Path.of("examples/execute-move-city.json")),
                 200);
         assertThat(moved.get("fired").asBoolean()).isTrue();
-        assertThat(moved.get("reasoning").asText()).isEqualTo(
-                "Rule Move customer to Pune fired. Set Customer.address.city to Pune (was London).");
+        assertThat(texts(moved.get("reasoning"))).containsExactly(
+                "Customer.address.city=Pune because address.city=London");
         assertThat(moved.get("outputData").get(0).get("values").get("address").get("city").asText()).isEqualTo("Pune");
         assertThat(moved.get("modifiedData").get(0).get("values").get("address").get("city").get("previousValue").asText()).isEqualTo("London");
         assertThat(moved.get("modifiedData").get(0).get("values").get("address").get("city").get("newValue").asText()).isEqualTo("Pune");
@@ -257,8 +272,8 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"code":"bad-segment","name":"Bad segment","facts":[{"type":"Customer"}],
-                                 "when":[{"binding":"$c","type":"Customer","conditions":{"field":"segment","operator":">=","value":65}}],
-                                 "then":[{"binding":"$c","assignments":[{"field":"segment","value":"SENIOR"}]}]}
+                                 "when":[{"binding":"$customer","type":"Customer","conditions":{"field":"segment","operator":">=","value":65}}],
+                                 "then":[{"binding":"$customer","assignments":[{"field":"segment","value":"SENIOR"}]}]}
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("not allowed for String")));
@@ -284,19 +299,22 @@ class RuleApiIT {
                                  "inputSchema":[{"type":"Nope","fields":[{"name":"nope","type":"String"}]}],
                                  "outputSchema":[{"type":"Nope","fields":[{"name":"nope","type":"String"}]}],
                                  "effectiveFrom":"2026-10-18","effectiveUntil":"2099-12-31",
-                                 "when":[{"binding":"$c","type":"Customer","conditions":{"field":"age","operator":">=","value":1}}],
-                                 "then":[{"binding":"$c","assignments":[{"field":"segment","value":"OK"}]}]}
+                                 "when":[{"binding":"$customer","type":"Customer","conditions":{"field":"age","operator":">=","value":1}}],
+                                 "then":[{"binding":"$customer","assignments":[{"field":"segment","value":"OK"}]}]}
                                 """))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.definition.facts").doesNotExist())
-                .andExpect(jsonPath("$.definition.inputSchema[0].type").value("Customer"))
-                .andExpect(jsonPath("$.definition.inputSchema[0].fields[0].name").value("age"))
-                .andExpect(jsonPath("$.definition.inputSchema[0].fields.length()").value(1))
-                .andExpect(jsonPath("$.definition.outputSchema[0].fields[0].name").value("age"))
-                .andExpect(jsonPath("$.definition.outputSchema[0].fields[1].name").value("segment"))
-                .andExpect(jsonPath("$.definition.outputSchema[0].fields.length()").value(2))
-                .andExpect(jsonPath("$.drl").value(org.hamcrest.Matchers.containsString("address : Address")))
-                .andExpect(jsonPath("$.drl").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("bogus"))));
+                .andExpect(jsonPath("$.description").doesNotExist())
+                .andExpect(jsonPath("$.definition").doesNotExist())
+                .andExpect(jsonPath("$.drl").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].definition.facts").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].definition.inputSchema[0].type").value("Customer"))
+                .andExpect(jsonPath("$.versions[0].definition.inputSchema[0].fields[0].name").value("age"))
+                .andExpect(jsonPath("$.versions[0].definition.inputSchema[0].fields.length()").value(1))
+                .andExpect(jsonPath("$.versions[0].definition.outputSchema[0].fields[0].name").value("age"))
+                .andExpect(jsonPath("$.versions[0].definition.outputSchema[0].fields[1].name").value("segment"))
+                .andExpect(jsonPath("$.versions[0].definition.outputSchema[0].fields.length()").value(2))
+                .andExpect(jsonPath("$.versions[0].drl").value(org.hamcrest.Matchers.containsString("address : Address")))
+                .andExpect(jsonPath("$.versions[0].drl").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("bogus"))));
 
         mockMvc.perform(post("/api/rules")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -334,7 +352,15 @@ class RuleApiIT {
         mockMvc.perform(get("/api/rules/" + id))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(id))
-                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.nullValue()));
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.name").value("Legacy rule"))
+                .andExpect(jsonPath("$.description").doesNotExist())
+                .andExpect(jsonPath("$.definition").doesNotExist())
+                .andExpect(jsonPath("$.drl").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].code").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].name").doesNotExist())
+                .andExpect(jsonPath("$.versions[0].version").value("v1"))
+                .andExpect(jsonPath("$.versions[0].description").value("Stored before codes existed"));
 
         JsonNode fired = postJson(
                 "/api/rules/" + id + "/execute",
@@ -345,7 +371,8 @@ class RuleApiIT {
         assertThat(fired.get("code").isNull()).isTrue();
         assertThat(fired.get("version").asText()).isEqualTo("v1");
         assertThat(fired.get("outputData").get(0).get("values").get("age").asInt()).isEqualTo(2);
-        assertThat(fired.get("reasoning").asText()).isEqualTo("Rule Legacy rule fired. Set Person.age to 2 (was 5).");
+        assertThat(texts(fired.get("reasoning"))).containsExactly(
+                "Person.age=2 because age >= 1");
 
         mockMvc.perform(put("/api/rules/" + id + "/versions/v1/dates")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -397,8 +424,8 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"code":"missing-type","name":"Missing","facts":[{"type":"Missing"}],
-                                 "when":[{"binding":"$m","type":"Missing","conditions":[]}],
-                                 "then":[{"binding":"$m","assignments":[{"field":"age","value":1}]}]}
+                                 "when":[{"binding":"$missing","type":"Missing","conditions":[]}],
+                                 "then":[{"binding":"$missing","assignments":[{"field":"age","value":1}]}]}
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("Invalid rule"))
@@ -413,8 +440,8 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"code":"unknown-field","name":"Unknown field","facts":[{"type":"Person"}],
-                                 "when":[{"binding":"$c","type":"Person","conditions":{"field":"salary","operator":">","value":1}}],
-                                 "then":[{"binding":"$c","assignments":[{"field":"age","value":1}]}]}
+                                 "when":[{"binding":"$person","type":"Person","conditions":{"field":"salary","operator":">","value":1}}],
+                                 "then":[{"binding":"$person","assignments":[{"field":"age","value":1}]}]}
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("salary is not a field of Person")));
@@ -423,8 +450,8 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"code":"quoted-condition","name":"Quoted","facts":[{"type":"Person"}],
-                                 "when":[{"binding":"$c","type":"Person","conditions":"age >= 1"}],
-                                 "then":[{"binding":"$c","assignments":[{"field":"age","value":1}]}]}
+                                 "when":[{"binding":"$person","type":"Person","conditions":"age >= 1"}],
+                                 "then":[{"binding":"$person","assignments":[{"field":"age","value":1}]}]}
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.details[0]").value(org.hamcrest.Matchers.containsString("must be an object")));
@@ -434,8 +461,8 @@ class RuleApiIT {
                         .content("""
                                 {"code":"broken-age","name":"broken","facts":[{"type":"Person"}],
                                  "effectiveFrom":"2026-10-18","effectiveUntil":"2099-12-31",
-                                 "when":[{"binding":"$c","type":"Person","conditions":{"field":"age","operator":">=","value":1}}],
-                                 "then":[{"binding":"$c","assignments":[{"field":"age","expression":"noSuchMethod()"}]}]}
+                                 "when":[{"binding":"$person","type":"Person","conditions":{"field":"age","operator":">=","value":1}}],
+                                 "then":[{"binding":"$person","assignments":[{"field":"age","expression":"noSuchMethod()"}]}]}
                                 """))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.error").value("Rule compilation failed"));
@@ -522,6 +549,8 @@ class RuleApiIT {
                 .andExpect(header().string("Location", "/api/rules/tier-rule/versions/v2"))
                 .andExpect(jsonPath("$.version").value("v2"))
                 .andExpect(jsonPath("$.versionNumber").value(2))
+                .andExpect(jsonPath("$.code").doesNotExist())
+                .andExpect(jsonPath("$.name").doesNotExist())
                 .andExpect(jsonPath("$.description").value("Future tier"))
                 .andExpect(jsonPath("$.active").value(false))
                 .andExpect(jsonPath("$.definition.then[0].assignments[0].value").value("NEXT"));
@@ -773,8 +802,8 @@ class RuleApiIT {
                 .andExpect(status().isCreated());
 
         String logic = """
-                "when":[{"binding":"$holder","type":"OverlapHolder","conditions":{"field":"age","operator":">=","value":1}}],
-                "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"%s"}]}]
+                "when":[{"binding":"$overlapHolder","type":"OverlapHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                "then":[{"binding":"$overlapHolder","assignments":[{"field":"segment","value":"%s"}]}]
                 """;
         mockMvc.perform(post("/api/rules")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -858,8 +887,8 @@ class RuleApiIT {
                                    {"effectiveFrom":"2026-11-01","effectiveUntil":"2026-11-01"},
                                    {"effectiveFrom":"2026-11-03","effectiveUntil":"2026-11-10"}
                                  ],
-                                 "when":[{"binding":"$holder","type":"GapHolder","conditions":{"field":"age","operator":">=","value":1}}],
-                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"OUTER"}]}]}
+                                 "when":[{"binding":"$gapHolder","type":"GapHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                                 "then":[{"binding":"$gapHolder","assignments":[{"field":"segment","value":"OUTER"}]}]}
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.versions[0].segments.length()").value(2));
@@ -869,8 +898,8 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"description":"The gap","effectiveFrom":"2026-11-02","effectiveUntil":"2026-11-02",
-                                 "when":[{"binding":"$holder","type":"GapHolder","conditions":{"field":"age","operator":">=","value":1}}],
-                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"GAP"}]}]}
+                                 "when":[{"binding":"$gapHolder","type":"GapHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                                 "then":[{"binding":"$gapHolder","assignments":[{"field":"segment","value":"GAP"}]}]}
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.version").value("v2"));
@@ -917,8 +946,8 @@ class RuleApiIT {
                         .content("""
                                 {"code":"approval-rule","name":"Approval rule","description":"First cut",
                                  "effectiveFrom":"2026-10-18","effectiveUntil":"2026-12-31",
-                                 "when":[{"binding":"$holder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":1}}],
-                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"FIRST"}]}]}
+                                 "when":[{"binding":"$approvalHolder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                                 "then":[{"binding":"$approvalHolder","assignments":[{"field":"segment","value":"FIRST"}]}]}
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.versions[0].stage").value("DRAFT"))
@@ -932,8 +961,8 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"description":"Revised while draft","salience":4,
-                                 "when":[{"binding":"$holder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":18}}],
-                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"REVISED"}]}]}
+                                 "when":[{"binding":"$approvalHolder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":18}}],
+                                 "then":[{"binding":"$approvalHolder","assignments":[{"field":"segment","value":"REVISED"}]}]}
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.description").value("Revised while draft"))
@@ -955,8 +984,8 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"description":"Too late",
-                                 "when":[{"binding":"$holder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":18}}],
-                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"NO"}]}]}
+                                 "when":[{"binding":"$approvalHolder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":18}}],
+                                 "then":[{"binding":"$approvalHolder","assignments":[{"field":"segment","value":"NO"}]}]}
                                 """))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.details[0]").value("Logic and dates can be changed only while the version is in draft."));
@@ -1027,8 +1056,8 @@ class RuleApiIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"description":"Next path","effectiveFrom":"2027-01-01","effectiveUntil":"2027-02-01",
-                                 "when":[{"binding":"$holder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":1}}],
-                                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"NEXT"}]}]}
+                                 "when":[{"binding":"$approvalHolder","type":"ApprovalHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                                 "then":[{"binding":"$approvalHolder","assignments":[{"field":"segment","value":"NEXT"}]}]}
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.version").value("v2"))
@@ -1098,8 +1127,8 @@ class RuleApiIT {
         json.append("\"effectiveFrom\":\"").append(from).append("\",");
         json.append("\"effectiveUntil\":\"").append(until).append("\",");
         json.append("""
-                "when":[{"binding":"$holder","type":"TierHolder","conditions":{"field":"age","operator":">=","value":1}}],
-                "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"%s"}]}]}
+                "when":[{"binding":"$tierHolder","type":"TierHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                "then":[{"binding":"$tierHolder","assignments":[{"field":"segment","value":"%s"}]}]}
                 """.formatted(segment));
         return json.toString();
     }
@@ -1129,8 +1158,8 @@ class RuleApiIT {
         return """
                 {"code":"festival-rule","name":"Festival rule","description":"%s",
                  "effectiveFrom":"%s","effectiveUntil":"%s",
-                 "when":[{"binding":"$holder","type":"FestivalHolder","conditions":{"field":"age","operator":">=","value":1}}],
-                 "then":[{"binding":"$holder","assignments":[{"field":"segment","value":"%s"}]}]}
+                 "when":[{"binding":"$festivalHolder","type":"FestivalHolder","conditions":{"field":"age","operator":">=","value":1}}],
+                 "then":[{"binding":"$festivalHolder","assignments":[{"field":"segment","value":"%s"}]}]}
                 """.formatted(segment, from, until, segment);
     }
 
@@ -1144,6 +1173,12 @@ class RuleApiIT {
                         .content(Files.readString(Path.of(path))))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", location));
+    }
+
+    private static List<String> texts(JsonNode node) {
+        List<String> values = new ArrayList<>();
+        node.forEach(child -> values.add(child.asText()));
+        return values;
     }
 
     private JsonNode postJson(String path, String json, int expectedStatus) throws Exception {

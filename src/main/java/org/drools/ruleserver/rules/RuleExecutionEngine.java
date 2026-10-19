@@ -77,13 +77,13 @@ public class RuleExecutionEngine {
             boolean activated = session.fireAllRules(1) > 0;
             boolean fired = activated && (!tracksBranches || !branchHits.isEmpty());
             List<FactSnapshot> after = snapshot(kieBase, types, inserted);
-            Reasoning reasoning = reasoningBuilder.describe(definition.name(), fired, before, after);
+            Reasoning reasoning = reasoningBuilder.describe(definition.name(), fired, definition, before, after);
             return new ExecutionResponse(
                     ruleId,
                     code,
                     version,
                     fired,
-                    reasoning.text(),
+                    reasoning.lines(),
                     toResults(before),
                     toResults(after),
                     reasoning.changes());

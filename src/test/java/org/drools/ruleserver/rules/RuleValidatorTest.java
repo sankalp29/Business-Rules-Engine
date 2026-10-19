@@ -124,8 +124,8 @@ class RuleValidatorTest {
                 null,
                 null,
                 null,
-                List.of(new WhenBlock("$c", "Customer", numberComparison("age", ">", 0))),
-                List.of(new ThenBlock("$c", List.of(assignment))));
+                List.of(new WhenBlock("$customer", "Customer", numberComparison("age", ">", 0))),
+                List.of(new ThenBlock("$customer", List.of(assignment))));
 
         assertThat(validator.validateForAuthoring(definition, customerAge())).anyMatch(error -> error.contains("must be a JSON number"));
     }
@@ -412,6 +412,36 @@ class RuleValidatorTest {
                         null)))));
         assertThat(validator.validateForAuthoring(twice, types))
                 .anyMatch(error -> error.contains("segment is assigned more than once"));
+    }
+
+    @Test
+    void rejectsASecondUseOfOneTypeAndABindingTheAuthorChose() throws Exception {
+        Map<String, FactDeclaration> types = catalog();
+        RuleDefinition duplicate = new RuleDefinition(
+                "two-customers",
+                "Two customers",
+                null,
+                null,
+                null,
+                null,
+                List.of(
+                        new WhenBlock("$customer", "Customer", numberComparison("age", ">=", 18)),
+                        new WhenBlock("$customer2", "Customer", numberComparison("age", ">=", 65))),
+                List.of(new ThenBlock("$customer", List.of(numberAssignment("age", 1)))));
+        assertThat(validator.validateForAuthoring(duplicate, types))
+                .anyMatch(error -> error.contains("when[1].type Customer is already used"));
+
+        RuleDefinition chosen = new RuleDefinition(
+                "custom-binding",
+                "Custom binding",
+                null,
+                null,
+                null,
+                null,
+                List.of(new WhenBlock("$c", "Customer", numberComparison("age", ">=", 18))),
+                List.of(new ThenBlock("$c", List.of(numberAssignment("age", 1)))));
+        assertThat(validator.validateForAuthoring(chosen, types))
+                .anyMatch(error -> error.contains("when[0].binding must be $customer"));
     }
 
     private FieldAssignment textAssignment(String field, String value) {

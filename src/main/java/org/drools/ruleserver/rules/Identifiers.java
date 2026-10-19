@@ -50,4 +50,12 @@ public final class Identifiers {
         }
         return !KEYWORDS.contains(value.substring(1));
     }
+
+    /** The only binding a type gets. `Customer` is `$customer`. */
+    public static String bindingFor(String typeName) {
+        if (typeName == null || typeName.isEmpty()) {
+            return "$fact";
+        }
+        return "$" + Character.toLowerCase(typeName.charAt(0)) + typeName.substring(1);
+    }
 }

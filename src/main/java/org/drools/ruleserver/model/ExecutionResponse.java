@@ -20,12 +20,16 @@ package org.drools.ruleserver.model;
 
 import java.util.List;
 
+/**
+ * One run. {@code ruleId} and {@code code} name the rule. {@code version} is the token of the
+ * version that ran. The version body is not repeated here.
+ */
 public record ExecutionResponse(
         Long ruleId,
         String code,
         String version,
         boolean fired,
-        String reasoning,
+        List<String> reasoning,
         List<FactResult> inputData,
         List<FactResult> outputData,
         List<FactResult> modifiedData) {

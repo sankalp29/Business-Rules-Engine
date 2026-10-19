@@ -6,6 +6,7 @@ import {
   emptyAssignment,
   emptyBranch,
   emptyComparison,
+  factLabels,
   type ArmDraft,
   type AssignmentDraft,
   type BranchDraft,
@@ -13,7 +14,7 @@ import {
   type ValueFieldOption,
   type WhenDraft,
 } from "../drafts"
-import { bindingFor, isPrimitive, leafText, uid, type Leaf, type TypeResponse } from "../model"
+import { isPrimitive, leafText, uid, type Leaf, type TypeResponse } from "../model"
 import { ConditionEditor } from "./ConditionEditor"
 import { TypedControl } from "./TypedControl"
 
@@ -36,8 +37,8 @@ export function WhenBlockEditor({
   onChange: (when: WhenDraft) => void
   onRemove: () => void
 }) {
-  const bindingId = useId()
   const typeId = useId()
+  const known = types.some((type) => type.name === when.type)
 
   return (
     <section className="sheet block">
@@ -49,43 +50,30 @@ export function WhenBlockEditor({
           </button>
         ) : null}
       </header>
-      <div className="pair">
-        <label className="field" htmlFor={bindingId}>
-          <span className="label-text">Binding</span>
-          <input
-            id={bindingId}
-            className="control mono-input"
-            value={when.binding}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(event) => onChange({ ...when, binding: event.target.value, bindingTouched: true })}
-          />
-        </label>
-        <label className="field" htmlFor={typeId}>
-          <span className="label-text">Type</span>
-          <select
-            id={typeId}
-            className="control"
-            value={when.type}
-            onChange={(event) => {
-              const type = event.target.value
-              onChange({
-                ...when,
-                type,
-                binding: when.bindingTouched ? when.binding : bindingFor(type),
-                root: type === when.type ? when.root : emptyComparison(),
-              })
-            }}
-          >
-            <option value="">Choose a type</option>
-            {types.map((type) => (
-              <option key={type.name} value={type.name}>
-                {type.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <label className="field type-pick" htmlFor={typeId}>
+        <span className="label-text">Type</span>
+        <select
+          id={typeId}
+          className="control"
+          value={when.type}
+          onChange={(event) => {
+            const type = event.target.value
+            onChange({
+              ...when,
+              type,
+              root: type === when.type ? when.root : emptyComparison(),
+            })
+          }}
+        >
+          <option value="">Choose a type</option>
+          {when.type && !known ? <option value={when.type}>{when.type}</option> : null}
+          {types.map((type) => (
+            <option key={type.name} value={type.name}>
+              {type.name}
+            </option>
+          ))}
+        </select>
+      </label>
       <ConditionEditor
         node={when.root}
         leaves={leaves}
@@ -105,9 +93,7 @@ export function WhenBlockEditor({
 export function ThenBlockEditor({
   index,
   block,
-  bindings,
-  bindingLabels,
-  bindingName = "Binding",
+  facts,
   leaves,
   whens,
   leavesByWhen,
@@ -118,9 +104,7 @@ export function ThenBlockEditor({
 }: {
   index: number
   block: ThenDraft
-  bindings: string[]
-  bindingLabels?: ReadonlyMap<string, string>
-  bindingName?: string
+  facts: readonly { binding: string; type: string }[]
   leaves: Leaf[]
   whens: WhenDraft[]
   leavesByWhen: Leaf[][]
@@ -129,8 +113,11 @@ export function ThenBlockEditor({
   onChange: (block: ThenDraft) => void
   onRemove: () => void
 }) {
-  const bindingId = useId()
+  const typeId = useId()
   const branches = block.branches ?? []
+  const choices = facts.filter((fact) => fact.binding && fact.type)
+  const labels = factLabels(choices)
+  const showType = choices.length > 1
   const conditionLeaves = chainLeaves(block.binding, whens, leavesByWhen)
   const valueFields = chainValueFields(block.binding, whens, leavesByWhen)
   const canDropAssignment = block.assignments.length > 1 || branches.length > 0
@@ -146,35 +133,40 @@ export function ThenBlockEditor({
           ) : null}
         </header>
       ) : null}
-      <div className={framed ? undefined : "fact-row"}>
-        <label className="field" htmlFor={bindingId}>
-          <span className="label-text">{bindingName}</span>
-          <select
-            id={bindingId}
-            className="control"
-            value={block.binding}
-            onChange={(event) => onChange({ ...block, binding: event.target.value })}
-          >
-            <option value="">{bindingName === "Fact" ? "Choose a fact" : "Choose a binding"}</option>
-            {bindings.map((binding) => (
-              <option key={binding} value={binding}>
-                {bindingLabels?.get(binding) ?? binding}
-              </option>
-            ))}
-          </select>
-        </label>
-        {!framed && canRemove ? (
-          <button type="button" className="ghost" onClick={onRemove}>
-            Remove
-          </button>
-        ) : null}
-      </div>
+      {showType || !framed ? (
+        <div className={framed ? undefined : "fact-row"}>
+          {showType ? (
+            <label className="field type-pick" htmlFor={typeId}>
+              <span className="label-text">Type</span>
+              <select
+                id={typeId}
+                className="control"
+                value={choices.some((fact) => fact.binding === block.binding) ? block.binding : ""}
+                onChange={(event) => onChange({ ...block, binding: event.target.value })}
+              >
+                <option value="">Choose a type</option>
+                {choices.map((fact) => (
+                  <option key={fact.binding} value={fact.binding}>
+                    {labels.get(fact.binding) ?? fact.type}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {!framed && canRemove ? (
+            <button type="button" className="ghost" onClick={onRemove}>
+              Remove
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="stack">
         {block.assignments.map((assignment) => (
           <AssignmentRow
             key={assignment.id}
             assignment={assignment}
             leaves={leaves}
+            binding={block.binding}
             canRemove={canDropAssignment}
             onChange={(next) =>
               onChange({
@@ -210,6 +202,7 @@ export function ThenBlockEditor({
               key={branch.id}
               branch={branch}
               index={branchIndex}
+              binding={block.binding}
               conditionLeaves={conditionLeaves}
               valueFields={valueFields}
               assignmentLeaves={leaves}
@@ -252,6 +245,7 @@ export function ThenBlockEditor({
 function BranchChainEditor({
   branch,
   index,
+  binding,
   conditionLeaves,
   valueFields,
   assignmentLeaves,
@@ -260,6 +254,7 @@ function BranchChainEditor({
 }: {
   branch: BranchDraft
   index: number
+  binding: string
   conditionLeaves: Leaf[]
   valueFields: ValueFieldOption[]
   assignmentLeaves: Leaf[]
@@ -277,6 +272,7 @@ function BranchChainEditor({
       <ArmEditor
         kicker="If"
         arm={branch.ifArm}
+        binding={binding}
         conditionLeaves={conditionLeaves}
         valueFields={valueFields}
         assignmentLeaves={assignmentLeaves}
@@ -287,6 +283,7 @@ function BranchChainEditor({
           key={arm.id}
           kicker="Else if"
           arm={arm}
+          binding={binding}
           conditionLeaves={conditionLeaves}
           valueFields={valueFields}
           assignmentLeaves={assignmentLeaves}
@@ -299,6 +296,7 @@ function BranchChainEditor({
         <ArmEditor
           kicker="Else"
           arm={branch.otherwise}
+          binding={binding}
           conditionLeaves={conditionLeaves}
           valueFields={valueFields}
           assignmentLeaves={assignmentLeaves}
@@ -324,6 +322,7 @@ function BranchChainEditor({
 function ArmEditor({
   kicker,
   arm,
+  binding,
   conditionLeaves,
   valueFields,
   assignmentLeaves,
@@ -333,6 +332,7 @@ function ArmEditor({
 }: {
   kicker: string
   arm: ArmDraft
+  binding: string
   conditionLeaves: Leaf[]
   valueFields: ValueFieldOption[]
   assignmentLeaves: Leaf[]
@@ -370,6 +370,7 @@ function ArmEditor({
             key={assignment.id}
             assignment={assignment}
             leaves={assignmentLeaves}
+            binding={binding}
             canRemove={arm.assignments.length > 1}
             onChange={(next) => onChange({ ...arm, assignments: arm.assignments.map((item) => (item.id === assignment.id ? next : item)) })}
             onRemove={() => onChange({ ...arm, assignments: arm.assignments.filter((item) => item.id !== assignment.id) })}
@@ -396,12 +397,14 @@ function untouchedAssignment(assignment: AssignmentDraft): boolean {
 function AssignmentRow({
   assignment,
   leaves,
+  binding,
   canRemove,
   onChange,
   onRemove,
 }: {
   assignment: AssignmentDraft
   leaves: Leaf[]
+  binding: string
   canRemove: boolean
   onChange: (assignment: AssignmentDraft) => void
   onRemove: () => void
@@ -459,7 +462,7 @@ function AssignmentRow({
             value={assignment.expression}
             spellCheck={false}
             autoComplete="off"
-            placeholder="$customer.getAge() * 0.01"
+            placeholder={binding ? `${binding}.getAge() * 0.01` : ""}
             onChange={(event) => onChange({ ...assignment, expression: event.target.value })}
           />
         ) : !leaf ? (

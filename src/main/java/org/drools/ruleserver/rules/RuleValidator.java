@@ -158,6 +158,7 @@ public class RuleValidator {
                                                      List<String> errors) {
         Map<String, String> bindings = new LinkedHashMap<>();
         Map<String, FieldNode> boundNodes = new LinkedHashMap<>();
+        Set<String> seenTypes = new HashSet<>();
         if (blocks == null || blocks.isEmpty()) {
             errors.add("when must contain at least one block");
             return bindings;
@@ -173,11 +174,23 @@ public class RuleValidator {
                 errors.add(path + " is required");
                 continue;
             }
-            if (!Identifiers.isBinding(block.binding())) {
+            String type = block.type();
+            boolean duplicateType = type != null && seenTypes.contains(type);
+            if (type != null && !duplicateType) {
+                seenTypes.add(type);
+            }
+            if (duplicateType) {
+                errors.add(path + ".type " + type + " is already used");
+            }
+            String expected = type == null || type.isEmpty() ? null : Identifiers.bindingFor(type);
+            boolean bindingOk = Identifiers.isBinding(block.binding());
+            if (!duplicateType && expected != null && !expected.equals(block.binding())) {
+                errors.add(path + ".binding must be " + expected);
+            } else if (!duplicateType && !bindingOk) {
                 errors.add(path + ".binding must look like $customer");
-            } else if (bindings.containsKey(block.binding())) {
+            } else if (!duplicateType && bindings.containsKey(block.binding())) {
                 errors.add(path + ".binding " + block.binding() + " is already used");
-            } else {
+            } else if (!duplicateType) {
                 bindings.put(block.binding(), block.type());
                 boundNodes.put(block.binding(), nodes.get(block.type()));
             }

@@ -3,6 +3,7 @@ import {
   approvalMarks,
   approvalStageErrors,
   canonicalVersion,
+  constructionDocument,
   findVersion,
   formatSchedule,
   formatWindow,
@@ -105,6 +106,28 @@ describe("version tokens", () => {
     expect(canonicalVersion("v01")).toBeNull()
     expect(canonicalVersion("version2")).toBeNull()
     expect(canonicalVersion("")).toBeNull()
+  })
+
+  it("builds a request from the rule and the active version", () => {
+    const later = version("v2")
+    later.description = "Later"
+    later.definition = { salience: 3, when: [], then: [] }
+    expect(
+      constructionDocument({
+        id: 1,
+        code: "senior",
+        name: "Senior",
+        activeVersion: "v2",
+        versions: [version("v1", true), later],
+      }),
+    ).toEqual({
+      code: "senior",
+      name: "Senior",
+      description: "Later",
+      salience: 3,
+      when: [],
+      then: [],
+    })
   })
 
   it("finds the version the token names", () => {

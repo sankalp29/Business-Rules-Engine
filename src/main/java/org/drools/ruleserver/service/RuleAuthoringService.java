@@ -670,16 +670,13 @@ public class RuleAuthoringService {
                 active.add(response);
             }
         }
-        RuleVersionResponse chosen = active.size() == 1 ? active.get(0) : null;
+        String activeVersion = active.size() == 1 ? active.get(0).version() : null;
         return new RuleResponse(
                 entity.getId(),
                 entity.getCode(),
                 entity.getName(),
-                chosen == null ? null : chosen.description(),
-                chosen == null ? null : chosen.definition(),
-                chosen == null ? null : chosen.drl(),
                 entity.getCreatedAt(),
-                chosen == null ? null : chosen.version(),
+                activeVersion,
                 rendered);
     }
 

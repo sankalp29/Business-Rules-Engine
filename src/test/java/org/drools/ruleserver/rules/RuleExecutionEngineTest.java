@@ -60,9 +60,10 @@ class RuleExecutionEngineTest {
         ExecutionResponse response = execute("examples/create-senior-discount.json", "examples/execute-senior-discount.json");
 
         assertThat(response.fired()).isTrue();
-        assertThat(response.reasoning()).isEqualTo(
-                "Rule Apply senior discount fired. Set Customer.discount to 0.2 (was 0.0). Set Customer.segment to SENIOR (was STANDARD).");
-        assertThat(response.reasoning()).doesNotContain("\\", "/");
+        assertThat(response.reasoning()).containsExactly(
+                "Customer.discount=0.2 because age >= 65",
+                "Customer.segment=SENIOR because age >= 65");
+        assertThat(response.reasoning()).allSatisfy(line -> assertThat(line).doesNotContain("\\", "/"));
         assertThat(response.inputData().get(0).values())
                 .containsEntry("segment", "STANDARD")
                 .containsEntry("discount", 0.0d);
@@ -85,7 +86,7 @@ class RuleExecutionEngineTest {
         ExecutionResponse response = execute("examples/create-senior-discount.json", "examples/execute-no-match.json");
 
         assertThat(response.fired()).isFalse();
-        assertThat(response.reasoning()).isEqualTo(
+        assertThat(response.reasoning()).containsExactly(
                 "Rule Apply senior discount did not fire. No fields were changed.");
         assertThat(response.modifiedData()).hasSize(1);
         assertThat(response.modifiedData().get(0).type()).isEqualTo(response.inputData().get(0).type());
@@ -141,8 +142,8 @@ class RuleExecutionEngineTest {
         assertThat(response.fired()).isTrue();
         assertThat(response.outputData().get(0).values()).containsEntry("discount", 1.0d);
         assertThat(response.inputData().get(0).values()).containsEntry("discount", 0.0d);
-        assertThat(response.reasoning()).isEqualTo(
-                "Rule Grow discount fired. Set Customer.discount to 1.0 (was 0.0).");
+        assertThat(response.reasoning()).containsExactly(
+                "Customer.discount=1.0 because discount < 5");
     }
 
     @Test
@@ -186,9 +187,10 @@ class RuleExecutionEngineTest {
         ExecutionResponse response = run(definition, facts, request);
 
         assertThat(response.fired()).isTrue();
-        assertThat(response.reasoning()).isEqualTo(
-                "Rule Approve large adult orders fired. Set Order.priority to HIGH (was NORMAL). Set Order.approved to true (was false).");
-        assertThat(response.reasoning()).doesNotContain("\\", "/");
+        assertThat(response.reasoning()).containsExactly(
+                "Order.priority=HIGH because Customer.age >= 18 & customerName=Customer.name & total > 100",
+                "Order.approved=true because Customer.age >= 18 & customerName=Customer.name & total > 100");
+        assertThat(response.reasoning()).allSatisfy(line -> assertThat(line).doesNotContain("\\", "/"));
         assertThat(response.inputData()).extracting(item -> item.type()).containsExactly("Customer", "Order");
         assertThat(response.outputData()).extracting(item -> item.type()).containsExactly("Customer", "Order");
         assertThat(response.modifiedData()).extracting(item -> item.type()).containsExactly("Customer", "Order");
@@ -204,9 +206,9 @@ class RuleExecutionEngineTest {
 
         assertThat(response.fired()).isTrue();
         assertThat(response.code()).isEqualTo("move-city");
-        assertThat(response.reasoning()).isEqualTo(
-                "Rule Move customer to Pune fired. Set Customer.address.city to Pune (was London).");
-        assertThat(response.reasoning()).doesNotContain("\\", "/");
+        assertThat(response.reasoning()).containsExactly(
+                "Customer.address.city=Pune because address.city=London");
+        assertThat(response.reasoning()).allSatisfy(line -> assertThat(line).doesNotContain("\\", "/"));
         assertThat(response.outputData().get(0).values().get("address")).isEqualTo(Map.of("city", "Pune", "zip", "SW1A"));
         @SuppressWarnings("unchecked")
         Map<String, Object> address = (Map<String, Object>) response.modifiedData().get(0).values().get("address");
@@ -242,9 +244,9 @@ class RuleExecutionEngineTest {
         ExecutionResponse response = run(definition, facts, request);
 
         assertThat(response.fired()).isTrue();
-        assertThat(response.reasoning()).isEqualTo(
-                "Rule Set country fired. Set Customer.address.country.code to IN (was GB).");
-        assertThat(response.reasoning()).doesNotContain("\\", "/");
+        assertThat(response.reasoning()).containsExactly(
+                "Customer.address.country.code=IN");
+        assertThat(response.reasoning()).allSatisfy(line -> assertThat(line).doesNotContain("\\", "/"));
     }
 
     @Test
@@ -273,8 +275,9 @@ class RuleExecutionEngineTest {
         ExecutionResponse response = execute("examples/create-large-adult-order.json", "examples/execute-large-adult-order.json");
 
         assertThat(response.fired()).isTrue();
-        assertThat(response.reasoning()).isEqualTo(
-                "Rule Approve large adult orders fired. Set Order.priority to HIGH (was NORMAL). Set Order.approved to true (was false).");
+        assertThat(response.reasoning()).containsExactly(
+                "Order.priority=HIGH because Customer.age >= 18 & customerName=Customer.name & total > 100",
+                "Order.approved=true because Customer.age >= 18 & customerName=Customer.name & total > 100");
     }
 
     @Test
@@ -342,22 +345,31 @@ class RuleExecutionEngineTest {
         assertThat(seniorGold.outputData().get(0).values())
                 .containsEntry("segment", "SENIOR")
                 .containsEntry("discount", 0.2d);
+        assertThat(seniorGold.reasoning()).containsExactly(
+                "Customer.segment=SENIOR because age > 18 & age >= 65",
+                "Customer.discount=0.2 because age > 18 & segment=GOLD");
 
         ExecutionResponse adultSilver = run(definition, facts, request(customer("Ada", 50, "SILVER")));
         assertThat(adultSilver.fired()).isTrue();
         assertThat(adultSilver.outputData().get(0).values())
                 .containsEntry("segment", "ADULT")
                 .containsEntry("discount", 0.1d);
+        assertThat(adultSilver.reasoning()).containsExactly(
+                "Customer.segment=ADULT because age > 18 & age >= 40",
+                "Customer.discount=0.1 because age > 18 & segment=SILVER");
 
         ExecutionResponse young = run(definition, facts, request(customer("Ada", 20, "STANDARD")));
         assertThat(young.fired()).isTrue();
         assertThat(young.outputData().get(0).values())
                 .containsEntry("segment", "YOUNG")
                 .containsEntry("discount", 0.05d);
+        assertThat(young.reasoning()).containsExactly(
+                "Customer.segment=YOUNG because age > 18",
+                "Customer.discount=0.05 because age > 18");
 
         ExecutionResponse child = run(definition, facts, request(customer("Ada", 10, "GOLD")));
         assertThat(child.fired()).isFalse();
-        assertThat(child.reasoning()).isEqualTo("Rule Tiered discount did not fire. No fields were changed.");
+        assertThat(child.reasoning()).containsExactly("Rule Tiered discount did not fire. No fields were changed.");
         assertThat(child.outputData().get(0).values())
                 .containsEntry("segment", "GOLD")
                 .containsEntry("discount", 0.0d);
@@ -412,6 +424,9 @@ class RuleExecutionEngineTest {
         ExecutionResponse overwritten = run(laterWins, facts, request(customer("Ada", 70, "STANDARD")));
         assertThat(overwritten.fired()).isTrue();
         assertThat(overwritten.outputData().get(0).values()).containsEntry("segment", "SECOND");
+        assertThat(overwritten.reasoning()).containsExactly(
+                "Customer.segment=FIRST because age >= 65",
+                "Customer.segment=SECOND because name=Ada");
     }
 
     @Test
@@ -442,6 +457,7 @@ class RuleExecutionEngineTest {
         ExecutionResponse missing = run(definition, facts, request(bare));
         assertThat(missing.fired()).isTrue();
         assertThat(missing.outputData().get(0).values()).containsEntry("segment", "HOME");
+        assertThat(missing.reasoning()).containsExactly("Customer.segment=HOME");
 
         FactInput present = fact("Customer", Map.of(
                 "name", mapper.getNodeFactory().textNode("Ada"),
@@ -450,6 +466,8 @@ class RuleExecutionEngineTest {
         ExecutionResponse away = run(definition, facts, request(present));
         assertThat(away.fired()).isTrue();
         assertThat(away.outputData().get(0).values()).containsEntry("segment", "AWAY");
+        assertThat(away.reasoning()).containsExactly(
+                "Customer.segment=AWAY because address.city != Pune");
     }
 
     @Test
@@ -493,6 +511,9 @@ class RuleExecutionEngineTest {
         assertThat(response.fired()).isTrue();
         assertThat(response.outputData().get(0).values()).containsEntry("segment", "SENIOR");
         assertThat(response.outputData().get(1).values()).containsEntry("priority", "HIGH");
+        assertThat(response.reasoning()).containsExactly(
+                "Customer.segment=SENIOR because age > 18 & age >= 65",
+                "Order.priority=HIGH because Customer.age > 18 & total > 100");
     }
 
     private RuleDefinition adultTiers() {

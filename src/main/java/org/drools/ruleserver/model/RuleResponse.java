@@ -22,17 +22,15 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * A rule and every version. {@code description}, {@code definition}, and {@code drl} are the
- * version that is active at the time of this response. They are null when no version is active.
- * Code and name do not change from one version to the next.
+ * A rule. {@code code} and {@code name} do not change from one version to the next.
+ * {@code activeVersion} is the token of the single version whose window contains the current
+ * minute, or null when none does or more than one does. Description, definition, and DRL belong
+ * to each entry of {@code versions}.
  */
 public record RuleResponse(
         Long id,
         String code,
         String name,
-        String description,
-        RuleDefinition definition,
-        String drl,
         Instant createdAt,
         String activeVersion,
         List<RuleVersionResponse> versions) {

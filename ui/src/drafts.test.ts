@@ -12,7 +12,7 @@ import {
   emptyComparison,
   emptyRule,
   executePayload,
-  factLabels,
+  valueFieldOptions,
   fieldToJson,
   incompleteNumbers,
   oneDayPeriod,
@@ -91,7 +91,7 @@ function assignment(patch: Partial<AssignmentDraft>): AssignmentDraft {
 }
 
 function when(root: ComparisonDraft | WhenDraft["root"] = comparison({})): WhenDraft {
-  return { id: "w", binding: "$customer", bindingTouched: true, type: "Customer", root }
+  return { id: "w", binding: "$customer", type: "Customer", root }
 }
 
 function segmentChain() {
@@ -556,7 +556,7 @@ describe("rule construction", () => {
   it("reads another fact from a branch and reloads the chains onto the then block", () => {
     const whens: WhenDraft[] = [
       when(comparison({ field: "age", operator: ">", valueText: "18" })),
-      { id: "w2", binding: "$order", bindingTouched: true, type: "Order", root: comparison({ id: "approved", field: "total", operator: ">", valueText: "0" }) },
+      { id: "w2", binding: "$order", type: "Order", root: comparison({ id: "approved", field: "total", operator: ">", valueText: "0" }) },
     ]
     const leaves = chainLeaves("$order", whens, [customerLeaves, orderLeaves])
     expect(leaves.map((leaf) => leaf.label)).toEqual([
@@ -651,17 +651,29 @@ describe("rule construction", () => {
     ])
   })
 
-  it("clears a then branch when its fact type changes and renames an untouched binding", () => {
+  it("derives the binding from the type and refuses a second use of that type", () => {
+    const dates = { effectiveFrom: "2091-01-01T00:00:00", effectiveUntil: "2092-01-01T00:00:00" }
+    const reloaded = draftFromVersion(
+      { code: "alias", name: "Alias" },
+      versionWith({
+        when: [{ binding: "$c", type: "Customer", conditions: { field: "age", operator: ">", value: 18 } }],
+        then: [{ binding: "$c", assignments: [{ field: "discount", expression: "$c.getAge() * 0.01" }] }],
+      }),
+      dates,
+    )
+    expect(reloaded.whens[0]).toMatchObject({ type: "Customer", binding: "$customer" })
+    expect(reloaded.thens[0]?.assignments[0]?.expression).toBe("$customer.getAge() * 0.01")
+
     const draft = rule({
       whens: [
-        { ...when(comparison({ field: "age", operator: ">", valueText: "18" })), bindingTouched: false },
-        { id: "w2", binding: "$order", bindingTouched: true, type: "Order", root: emptyComparison() },
+        when(comparison({ field: "age", operator: ">", valueText: "18" })),
+        { id: "w2", binding: "$order", type: "Order", root: emptyComparison() },
       ],
       thens: [
         {
           id: "t",
           binding: "$customer",
-          assignments: [assignment({ field: "segment", valueText: "BASE" })],
+          assignments: [assignment({ field: "segment", valueText: "BASE", expression: "$customer.getAge() * 0.01" })],
           branches: [
             {
               id: "b",
@@ -677,13 +689,30 @@ describe("rule construction", () => {
         },
       ],
     })
-    const next = changeFactType(draft, "w", "Order")
-    expect(next.whens[0]).toMatchObject({ type: "Order", binding: "$order2" })
-    expect(next.thens[0]).toMatchObject({ binding: "$order2" })
+    expect(changeFactType(draft, "w", "Order")).toBe(draft)
+    const next = changeFactType(draft, "w", "Person")
+    expect(next.whens[0]).toMatchObject({ type: "Person", binding: "$person" })
+    expect(next.whens[1]).toMatchObject({ type: "Order", binding: "$order" })
+    expect(next.thens[0]).toMatchObject({ binding: "$person" })
     expect(next.thens[0]?.assignments[0]?.field).toBe("")
+    expect(next.thens[0]?.assignments[0]?.expression).toBe("$person.getAge() * 0.01")
     expect(next.thens[0]?.branches?.[0]?.ifArm.when).toMatchObject({ field: "" })
-    expect(factLabels(next.whens).get("$order2")).toBe("Order 1")
-    expect(factLabels(next.whens).get("$order")).toBe("Order 2")
+
+    const duplicate = buildRule(
+      rule({
+        whens: [
+          when(comparison({ field: "age", operator: ">", valueText: "18" })),
+          { id: "w2", binding: "$customer2", type: "Customer", root: comparison({ id: "c2", field: "age", operator: ">=", valueText: "65" }) },
+        ],
+      }),
+      [customerLeaves, customerLeaves],
+    )
+    expect(duplicate.body).toBeNull()
+    expect(duplicate.errors).toContain("When block 2: Customer is already used.")
+    expect(duplicate.errors.join(" ")).not.toContain("$customer2")
+
+    const labelled = valueFieldOptions(orderLeaves, [{ binding: "$customer", type: "Customer", leaves: customerLeaves }])
+    expect(labelled.find((option) => option.value === "$customer.name")?.label).toBe("Customer.name")
   })
 
   it("refuses a fractional value for an integer field", () => {

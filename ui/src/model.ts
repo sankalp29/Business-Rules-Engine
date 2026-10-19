@@ -135,14 +135,13 @@ export type RuleVersion = {
   returnedFrom?: RejectionNote | null
 }
 
+/** Rule identity. Description, definition, and DRL live on each version. */
 export type RuleResponse = {
   id: number
   code: string | null
   name: string | null
-  description: string | null
-  definition: RuleDefinition | null
-  drl: string | null
   createdAt?: string
+  /** Token of the single version in the current window, or null when none or more than one is. */
   activeVersion?: string | null
   versions?: RuleVersion[]
 }
@@ -157,7 +156,7 @@ export type ExecutionResponse = {
   code: string | null
   version: string | null
   fired: boolean
-  reasoning: string
+  reasoning: string[]
   inputData: FactResult[] | null
   outputData: FactResult[] | null
   modifiedData: FactResult[] | null

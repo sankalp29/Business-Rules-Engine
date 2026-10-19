@@ -13,7 +13,10 @@ export function LogicFields({
   leavesByWhen: Leaf[][]
   onChange: (recipe: (draft: RuleDraft) => RuleDraft) => void
 }) {
-  const bindings = [...new Set(draft.whens.map((when) => when.binding.trim()).filter(Boolean))]
+  const untyped = draft.whens.some((when) => !when.type.trim())
+  const unused = types.some((type) => !draft.whens.some((when) => when.type === type.name))
+  const canAddWhen = !untyped && unused
+  const facts = draft.whens.map((when) => ({ binding: when.binding.trim(), type: when.type.trim() }))
 
   return (
     <>
@@ -22,12 +25,15 @@ export function LogicFields({
           key={when.id}
           index={index}
           when={when}
-          types={types}
+          types={types.filter(
+            (type) => type.name === when.type || !draft.whens.some((other) => other.id !== when.id && other.type === type.name),
+          )}
           leaves={leavesByWhen[index] ?? []}
           valueFields={valueFieldOptions(
             leavesByWhen[index] ?? [],
             draft.whens.slice(0, index).map((block, blockIndex) => ({
               binding: block.binding,
+              type: block.type,
               leaves: leavesByWhen[blockIndex] ?? [],
             })),
           )}
@@ -36,9 +42,16 @@ export function LogicFields({
           onRemove={() => onChange((current) => removeWhen(current, when.id))}
         />
       ))}
-      <button type="button" className="ghost" onClick={() => onChange(addFact)}>
+      <button
+        type="button"
+        className="ghost"
+        disabled={!canAddWhen}
+        title={untyped ? "Choose a type first." : unused ? undefined : "Each type can be used once."}
+        onClick={() => onChange(addFact)}
+      >
         Add when block
       </button>
+      {!untyped && !unused ? <p className="note">Each type can be used once.</p> : null}
       {draft.thens.map((block, index) => {
         const whenIndex = draft.whens.findIndex((when) => when.binding.trim() === block.binding.trim())
         return (
@@ -46,7 +59,7 @@ export function LogicFields({
             key={block.id}
             index={index}
             block={block}
-            bindings={bindings}
+            facts={facts}
             leaves={whenIndex >= 0 ? (leavesByWhen[whenIndex] ?? []) : []}
             whens={draft.whens}
             leavesByWhen={leavesByWhen}

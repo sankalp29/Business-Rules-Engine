@@ -663,6 +663,10 @@ a.ghost.link-button:hover,
   max-width: 12rem;
 }
 
+.type-pick {
+  max-width: 20rem;
+}
+
 .preview {
   position: sticky;
   top: 1rem;
@@ -1251,6 +1255,9 @@ a.version-card:hover {
 }
 
 .reasoning {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
   font-size: 1.05rem;
 }
 

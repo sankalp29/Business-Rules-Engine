@@ -30,6 +30,7 @@ import java.util.List;
  * {@code stage} is the current approval step. {@code stages} is the path this version follows,
  * marked only for the latest pass from draft. {@code editable} is true in draft.
  * {@code returnedFrom} is the rejection that sent the version back, while it is still in draft.
+ * Code and name belong to the rule and are not repeated here.
  */
 public record RuleVersionResponse(
         Long id,
